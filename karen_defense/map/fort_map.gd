@@ -54,6 +54,7 @@ var barricades: Array = []
 var spawn_points: Array[Vector2] = []
 var wall_rects: Array[Rect2] = []
 var obstacle_rects: Array[Rect2] = []
+var static_collision_rects: Array[Rect2] = []
 var terrain_rects: Array = []  # Array of {rect: Rect2, type: TerrainType, blocks_movement: bool, blocks_vision: bool, movement_penalty: float}
 var bg_texture: Texture2D = null
 var bg_tint: Color = Color(1.0, 1.0, 1.0)
@@ -95,6 +96,7 @@ func load_map_config(map_id: int):
 		bg_texture = null
 	bg_tint = map_config.get("bg_tint", Color(1.0, 1.0, 1.0))
 	_rebuild_obstacles()
+	_rebuild_static_collision_rects()
 	queue_redraw()
 
 func _apply_dimensions(new_scale: float):
@@ -201,6 +203,7 @@ func _apply_dimensions(new_scale: float):
 				doors[i].is_vertical = maze_door_defs[mi].is_vertical
 
 	_rebuild_obstacles()
+	_rebuild_static_collision_rects()
 	queue_redraw()
 
 func expand(new_scale: float):
@@ -245,6 +248,21 @@ func _rebuild_obstacles():
 		FORT_LEFT, FORT_TOP, fort_w, fort_h
 	):
 		terrain_rects.append(t)
+
+func _rebuild_static_collision_rects():
+	"""Cache static collision shapes (everything except barricades/doors)."""
+	static_collision_rects.clear()
+	for t in terrain_rects:
+		if t.blocks_movement:
+			static_collision_rects.append(t.rect)
+	for rect in wall_rects:
+		static_collision_rects.append(rect)
+	for rect in keep_wall_rects:
+		static_collision_rects.append(rect)
+	for rect in corridor_wall_rects:
+		static_collision_rects.append(rect)
+	for rect in obstacle_rects:
+		static_collision_rects.append(rect)
 
 func _build_maze():
 	"""Generate internal corridor walls and door positions for the maze layout."""
@@ -381,6 +399,7 @@ func is_inside_keep(pos: Vector2) -> bool:
 
 
 func is_line_walkable(from_pos: Vector2, to_pos: Vector2, radius: float = 10.0) -> bool:
+	# Full test: includes dynamic blockers such as doors/barricades.
 	var dist = from_pos.distance_to(to_pos)
 	if dist <= 1.0:
 		return true
@@ -392,6 +411,44 @@ func is_line_walkable(from_pos: Vector2, to_pos: Vector2, radius: float = 10.0) 
 		if resolved.distance_to(sample) > 0.75:
 			return false
 	return true
+
+func is_line_walkable_static(from_pos: Vector2, to_pos: Vector2, radius: float = 10.0) -> bool:
+	"""Line test against static world geometry (ignores doors/barricades)."""
+	var dist = from_pos.distance_to(to_pos)
+	if dist <= 1.0:
+		return true
+	var steps = int(ceil(dist / 26.0))
+	for i in range(steps + 1):
+		var t = float(i) / float(maxi(steps, 1))
+		var sample = from_pos.lerp(to_pos, t)
+		var resolved = resolve_collision_static(sample, radius)
+		if resolved.distance_to(sample) > 0.75:
+			return false
+	return true
+
+func get_blocking_door_on_line(from_pos: Vector2, to_pos: Vector2, radius: float = 10.0):
+	"""Returns first closed door blocking travel along a segment, else null."""
+	var best = null
+	var best_t = INF
+	var dist = from_pos.distance_to(to_pos)
+	if dist <= 1.0:
+		return null
+	var steps = int(ceil(dist / 18.0))
+	for d in doors:
+		if not d.is_blocking():
+			continue
+		var d_rect = d.get_collision_rect()
+		if d_rect.size.length_squared() <= 0.001:
+			continue
+		for i in range(steps + 1):
+			var t = float(i) / float(maxi(steps, 1))
+			var sample = from_pos.lerp(to_pos, t)
+			if _point_hits_rect(sample, radius, d_rect):
+				if t < best_t:
+					best_t = t
+					best = d
+				break
+	return best
 
 func get_navigation_waypoints() -> Array[Vector2]:
 	var points: Array[Vector2] = []
@@ -441,21 +498,8 @@ func get_nearest_closed_door(pos: Vector2, range_dist: float):
 # --- Collision ---
 
 func resolve_collision(pos: Vector2, radius: float) -> Vector2:
-	# Push out of terrain that blocks movement
-	for t in terrain_rects:
-		if t.blocks_movement:
-			pos = _push_out_of_rect(pos, radius, t.rect)
-	# Push out of outer wall segments
-	for rect in wall_rects:
-		pos = _push_out_of_rect(pos, radius, rect)
-	# Push out of inner keep wall segments
-	for rect in keep_wall_rects:
-		pos = _push_out_of_rect(pos, radius, rect)
-	# Push out of corridor maze walls
-	for rect in corridor_wall_rects:
-		pos = _push_out_of_rect(pos, radius, rect)
-	# Push out of obstacles
-	for rect in obstacle_rects:
+	# Push out of static geometry (cached)
+	for rect in static_collision_rects:
 		pos = _push_out_of_rect(pos, radius, rect)
 	# Push out of intact barricades
 	for b in barricades:
@@ -470,6 +514,16 @@ func resolve_collision(pos: Vector2, radius: float) -> Vector2:
 		if d_rect.size.length() > 0:
 			pos = _push_out_of_rect(pos, radius, d_rect)
 	return pos
+
+func resolve_collision_static(pos: Vector2, radius: float) -> Vector2:
+	for rect in static_collision_rects:
+		pos = _push_out_of_rect(pos, radius, rect)
+	return pos
+
+func _point_hits_rect(point: Vector2, radius: float, rect: Rect2) -> bool:
+	var closest_x = clampf(point.x, rect.position.x, rect.position.x + rect.size.x)
+	var closest_y = clampf(point.y, rect.position.y, rect.position.y + rect.size.y)
+	return point.distance_to(Vector2(closest_x, closest_y)) < radius
 
 func _push_out_of_rect(pos: Vector2, radius: float, rect: Rect2) -> Vector2:
 	var closest_x = clampf(pos.x, rect.position.x, rect.position.x + rect.size.x)
