@@ -37,8 +37,10 @@ let ws = null, sessionCode = null, reconnectToken = null;
 let lastBombAt = 0, lastSupplyAt = 0, lastRadarAt = 0, lastEmpAt = 0;
 let bombsRemaining = BOMBS_PER_WAVE, suppliesRemaining = SUPPLIES_PER_WAVE, radarsRemaining = RADAR_PER_WAVE, empsRemaining = EMP_PER_WAVE;
 let selectedAbility = 'bomb';
-let gameState = 'wave_active';
+let gameState = 'waiting';
 let currentWave = 0;
+let latestStateSeq = 0;
+let hasAuthoritativeState = false;
 let radarRevealActive = false;
 
 // Connection quality
@@ -340,6 +342,11 @@ function setupWsHandlers(socket) {
       bombsRemaining = BOMBS_PER_WAVE;
       suppliesRemaining = SUPPLIES_PER_WAVE;
       resetMinimapState();
+      radarsRemaining = RADAR_PER_WAVE;
+      empsRemaining = EMP_PER_WAVE;
+      latestStateSeq = 0;
+      hasAuthoritativeState = false;
+      gameState = 'waiting';
       waiting.classList.add('hidden');
       connected.classList.remove('hidden');
       updateConnectionBadge();
@@ -424,7 +431,12 @@ function setupWsHandlers(socket) {
       impactFlash = { x: m.x, y: m.y, type: 'supply', at: Date.now() };
       playSoundEffect('supply');
     } else if (m.type === 'game_state') {
-      gameState = m.state || 'wave_active';
+      const incomingSeq = Number(m.state_seq);
+      if (!Number.isFinite(incomingSeq) || incomingSeq <= latestStateSeq) return;
+      latestStateSeq = incomingSeq;
+      hasAuthoritativeState = true;
+      gameState = typeof m.state === 'string' ? m.state : 'waiting';
+      if (typeof m.wave === 'number' && Number.isFinite(m.wave)) currentWave = m.wave;
     } else if (m.type === 'pong') {
       if (m.timestamp && lastPingAt) {
         latencyMs = Date.now() - lastPingAt;
@@ -515,8 +527,8 @@ copyBtn.onclick = () => {
 };
 
 function canUseAbility(ability) {
-  // Disable abilities when not in active wave
-  if (gameState !== 'wave_active') return false;
+  // Disable abilities until authoritative game_state stream marks active combat
+  if (!hasAuthoritativeState || gameState !== 'wave_active') return false;
   const info = abilityInfo[ability];
   if (!info) return false;
   const lastAt = ability === 'bomb' ? lastBombAt : ability === 'supply' ? lastSupplyAt : ability === 'radar' ? lastRadarAt : lastEmpAt;
@@ -948,7 +960,7 @@ function updateAbilityButtons() {
     }
 
     // Update button state
-    if (gameState !== 'wave_active' || !canUse) {
+    if (!canUse) {
       btn.classList.add('disabled');
       btn.classList.remove('ready');
     } else {

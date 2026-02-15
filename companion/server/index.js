@@ -196,7 +196,8 @@ app.get('/session/create', (req, res) => {
     lastSupplyAt: 0,
     lastRadarAt: 0,
     lastEmpAt: 0,
-    reconnectToken: token
+    reconnectToken: token,
+    relayStateSeq: 0
   });
   res.json({ code, token });
 });
@@ -217,6 +218,12 @@ function relayWithTiming(targetWs, payload, ingressAt, session) {
   recordSample(metrics.relayLatencySamples, latency, nowMs());
   sessionRecordSample(session, 'relayLatencySamples', latency, nowMs());
   return true;
+}
+
+function relayWithMetadata(session, payload) {
+  if (!session) return payload;
+  session.relayStateSeq = (session.relayStateSeq || 0) + 1;
+  return { ...payload, relay_ts: Date.now(), relay_seq: session.relayStateSeq };
 }
 
 const server = createServer(app);
@@ -275,6 +282,7 @@ wss.on('connection', (ws) => {
         if (ws.role === 'game') s.game = ws;
         else if (ws.role === 'companion') {
           s.companion = ws;
+          s.relayStateSeq = 0;
           s.dropsThisWave = 0;
           s.suppliesThisWave = 0;
           s.radarsThisWave = 0;
@@ -314,6 +322,7 @@ wss.on('connection', (ws) => {
         if (ws.role === 'game') foundSession.game = ws;
         else if (ws.role === 'companion') {
           foundSession.companion = ws;
+          foundSession.relayStateSeq = 0;
           foundSession.dropsThisWave = 0;
           foundSession.suppliesThisWave = 0;
           foundSession.radarsThisWave = 0;
@@ -397,7 +406,8 @@ wss.on('connection', (ws) => {
           };
           if (msg.chopper) fwd.chopper = msg.chopper;
           if (msg.chopper_removed) fwd.chopper_removed = true;
-          relayWithTiming(s.companion, fwd, ingressAt, s);
+          const fwdWithMeta = relayWithMetadata(s, fwd);
+          relayWithTiming(s.companion, fwdWithMeta, ingressAt, s);
         }
       } else if (t === 'bomb_impact' && ws.role === 'game' && ws.code) {
         const s = sessions.get(ws.code);
@@ -417,7 +427,10 @@ wss.on('connection', (ws) => {
         const s = sessions.get(ws.code);
         if (s && s.companion) {
           sessionRecordMessage(s, t, now);
-          relayWithTiming(s.companion, { type: 'game_state', state: msg.state }, ingressAt, s);
+          const stateSeq = Number.isFinite(Number(msg.state_seq)) ? Number(msg.state_seq) : 0;
+          const wave = Number.isFinite(Number(msg.wave)) ? Number(msg.wave) : 0;
+          const fwd = relayWithMetadata(s, { type: 'game_state', state: msg.state, state_seq: stateSeq, wave });
+          relayWithTiming(s.companion, fwd, ingressAt, s);
         }
       } else if (t === 'ping' && ws.role === 'companion') {
         if (ws.code) {

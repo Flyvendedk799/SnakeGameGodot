@@ -280,10 +280,10 @@ func send_supply_impact(nx: float, ny: float):
 		return
 	_ws.send_text(JSON.stringify({ type = "supply_impact", x = clampf(nx, 0, 1), y = clampf(ny, 0, 1) }))
 
-func send_game_state(state_name: String):
+func send_game_state(state_name: String, state_seq: int, wave: int):
 	if _ws == null or _ws.get_ready_state() != WebSocketPeer.STATE_OPEN:
 		return
-	_ws.send_text(JSON.stringify({ type = "game_state", state = state_name }))
+	_ws.send_text(JSON.stringify({ type = "game_state", state = state_name, state_seq = state_seq, wave = wave }))
 
 func is_session_connected() -> bool:
 	return _ws != null and _ws.get_ready_state() == WebSocketPeer.STATE_OPEN

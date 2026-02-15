@@ -7,6 +7,7 @@ enum GameState { WORLD_SELECT, TITLE, WAVE_ACTIVE, BETWEEN_WAVES, PAUSED, LEVEL_
 var state: GameState = GameState.WORLD_SELECT
 var previous_state: GameState = GameState.TITLE
 var _last_companion_state: String = ""
+var _last_companion_state_seq: int = 0
 
 # Child references
 var map: FortMap
@@ -381,7 +382,8 @@ func _process(delta):
 				var chopper_pos = null
 				if companion_helicopter and is_instance_valid(companion_helicopter):
 					chopper_pos = [companion_helicopter.position.x / w, companion_helicopter.position.y / h]
-				companion_session.send_minimap_with_state(enemies_arr, allies_arr, players_arr, current_wave, _last_companion_state, chopper_pos)
+				var cs := "wave_active" if state == GameState.WAVE_ACTIVE else "between_waves" if state == GameState.BETWEEN_WAVES else "other"
+				companion_session.send_minimap_with_state(enemies_arr, allies_arr, players_arr, current_wave, cs, chopper_pos)
 
 	_update_visibility()
 	_update_companion_game_state()
@@ -408,7 +410,9 @@ func _update_companion_game_state():
 			state_name = "other"
 	if state_name != _last_companion_state:
 		_last_companion_state = state_name
-		companion_session.send_game_state(state_name)
+		_last_companion_state_seq += 1
+	# Authoritative stream: keep sending latest state snapshot with monotonic sequence.
+	companion_session.send_game_state(state_name, _last_companion_state_seq, current_wave)
 
 func _process_title(delta):
 	title_time += delta
