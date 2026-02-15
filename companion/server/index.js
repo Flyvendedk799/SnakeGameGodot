@@ -3,6 +3,7 @@ import { WebSocketServer } from 'ws';
 import { createServer } from 'http';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { SessionStore } from './src/session_store.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const app = express();
@@ -12,7 +13,6 @@ const CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 function makeCode() { return Array.from({length:6}, () => CHARS[Math.floor(Math.random()*CHARS.length)]).join(''); }
 function makeToken() { return Array.from({length:12}, () => CHARS[Math.floor(Math.random()*CHARS.length)]).join(''); }
 
-const sessions = new Map();
 const COOLDOWN_BOMB_MS = 30000;
 const COOLDOWN_SUPPLY_MS = 45000;
 const COOLDOWN_RADAR_MS = 60000;
@@ -25,6 +25,7 @@ const MAX_MSG_SIZE = 4096;
 const RATE_LIMIT_MSGS = 50;
 const RATE_LIMIT_WINDOW_MS = 10000;
 const SESSION_EXPIRY_MS = 2 * 60 * 60 * 1000; // 2 hours
+const sessions = new SessionStore({ sessionExpiryMs: SESSION_EXPIRY_MS });
 
 app.use(express.static(path.join(__dirname, 'client')));
 
@@ -32,22 +33,9 @@ app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/session/create', (req, res) => {
   let code;
-  do { code = makeCode(); } while (sessions.has(code));
+  do { code = makeCode(); } while (sessions.hasCode(code));
   const token = makeToken();
-  sessions.set(code, {
-    game: null,
-    companion: null,
-    createdAt: Date.now(),
-    dropsThisWave: 0,
-    suppliesThisWave: 0,
-    radarsThisWave: 0,
-    empsThisWave: 0,
-    lastDropAt: 0,
-    lastSupplyAt: 0,
-    lastRadarAt: 0,
-    lastEmpAt: 0,
-    reconnectToken: token
-  });
+  sessions.create({ code, reconnectToken: token });
   res.json({ code, token });
 });
 
@@ -94,14 +82,10 @@ wss.on('connection', (ws) => {
       if (t === 'join' && msg.code && msg.role) {
         const code = String(msg.code).toUpperCase();
         if (code.length !== 6) return;
-        let s = sessions.get(code);
+        const codeLookup = sessions.inspectByCode(code);
+        let s = codeLookup.session;
         if (!s) {
-          safeSend(ws, { type: 'error', message: 'Invalid code' });
-          return;
-        }
-        if (now - s.createdAt > SESSION_EXPIRY_MS) {
-          sessions.delete(code);
-          safeSend(ws, { type: 'error', message: 'Session expired' });
+          safeSend(ws, { type: 'error', message: codeLookup.expired ? 'Session expired' : 'Invalid code' });
           return;
         }
         ws.role = msg.role === 'game' ? 'game' : msg.role === 'companion' ? 'companion' : null;
@@ -124,22 +108,11 @@ wss.on('connection', (ws) => {
         // Reconnect with token instead of code
         const token = String(msg.token).toUpperCase();
         if (token.length !== 12) return;
-        let foundSession = null;
-        let foundCode = null;
-        for (const [code, s] of sessions.entries()) {
-          if (s.reconnectToken === token) {
-            foundSession = s;
-            foundCode = code;
-            break;
-          }
-        }
+        const tokenLookup = sessions.inspectByToken(token);
+        const foundSession = tokenLookup.session;
+        const foundCode = foundSession?.code;
         if (!foundSession) {
-          safeSend(ws, { type: 'error', message: 'Invalid token' });
-          return;
-        }
-        if (now - foundSession.createdAt > SESSION_EXPIRY_MS) {
-          sessions.delete(foundCode);
-          safeSend(ws, { type: 'error', message: 'Session expired' });
+          safeSend(ws, { type: 'error', message: tokenLookup.expired ? 'Session expired' : 'Invalid token' });
           return;
         }
         ws.role = msg.role === 'game' ? 'game' : msg.role === 'companion' ? 'companion' : null;
@@ -159,78 +132,91 @@ wss.on('connection', (ws) => {
           safeSend(foundSession.companion, { type: 'game_connected' });
         }
       } else if (t === 'helicopter_drop' && ws.role === 'companion' && ws.code) {
-        const s = sessions.get(ws.code);
+        const s = sessions.getByCode(ws.code);
         if (!s || !s.game) return;
-        if (s.dropsThisWave >= BOMBS_PER_WAVE || (now - s.lastDropAt) < COOLDOWN_BOMB_MS) return;
+        const dropResult = sessions.consumeAbility(ws.code, {
+          perWaveKey: 'dropsThisWave',
+          lastAtKey: 'lastDropAt',
+          perWaveLimit: BOMBS_PER_WAVE,
+          cooldownMs: COOLDOWN_BOMB_MS,
+          now
+        });
+        if (!dropResult.ok) return;
         const x = Math.max(0, Math.min(1, Number(msg.x) ?? 0.5));
         const y = Math.max(0, Math.min(1, Number(msg.y) ?? 0.5));
-        s.dropsThisWave++;
-        s.lastDropAt = now;
         safeSend(s.game, { type: 'bomb_drop', x, y });
-        safeSend(ws, { type: 'drop_ack', x, y, ability: 'bomb', remaining: BOMBS_PER_WAVE - s.dropsThisWave });
+        safeSend(ws, { type: 'drop_ack', x, y, ability: 'bomb', remaining: dropResult.remaining });
       } else if (t === 'supply_drop' && ws.role === 'companion' && ws.code) {
-        const s = sessions.get(ws.code);
+        const s = sessions.getByCode(ws.code);
         if (!s || !s.game) return;
-        if (s.suppliesThisWave >= SUPPLIES_PER_WAVE || (now - s.lastSupplyAt) < COOLDOWN_SUPPLY_MS) return;
+        const supplyResult = sessions.consumeAbility(ws.code, {
+          perWaveKey: 'suppliesThisWave',
+          lastAtKey: 'lastSupplyAt',
+          perWaveLimit: SUPPLIES_PER_WAVE,
+          cooldownMs: COOLDOWN_SUPPLY_MS,
+          now
+        });
+        if (!supplyResult.ok) return;
         const x = Math.max(0, Math.min(1, Number(msg.x) ?? 0.5));
         const y = Math.max(0, Math.min(1, Number(msg.y) ?? 0.5));
-        s.suppliesThisWave++;
-        s.lastSupplyAt = now;
         safeSend(s.game, { type: 'supply_drop', x, y });
-        safeSend(ws, { type: 'drop_ack', x, y, ability: 'supply', remaining: SUPPLIES_PER_WAVE - s.suppliesThisWave });
+        safeSend(ws, { type: 'drop_ack', x, y, ability: 'supply', remaining: supplyResult.remaining });
       } else if (t === 'chopper_input' && ws.role === 'companion' && ws.code) {
-        const s = sessions.get(ws.code);
+        const s = sessions.getByCode(ws.code);
         if (!s || !s.game) return;
         const x = Math.max(-1, Math.min(1, Number(msg.x) ?? 0));
         const y = Math.max(-1, Math.min(1, Number(msg.y) ?? 0));
         safeSend(s.game, { type: 'chopper_input', x, y });
       } else if (t === 'radar_ping' && ws.role === 'companion' && ws.code) {
-        const s = sessions.get(ws.code);
+        const s = sessions.getByCode(ws.code);
         if (!s || !s.game) return;
-        if (s.radarsThisWave >= RADAR_PER_WAVE || (now - s.lastRadarAt) < COOLDOWN_RADAR_MS) return;
-        s.radarsThisWave++;
-        s.lastRadarAt = now;
+        const radarResult = sessions.consumeAbility(ws.code, {
+          perWaveKey: 'radarsThisWave',
+          lastAtKey: 'lastRadarAt',
+          perWaveLimit: RADAR_PER_WAVE,
+          cooldownMs: COOLDOWN_RADAR_MS,
+          now
+        });
+        if (!radarResult.ok) return;
         safeSend(s.game, { type: 'radar_ping' });
-        safeSend(ws, { type: 'radar_ack', remaining: RADAR_PER_WAVE - s.radarsThisWave });
+        safeSend(ws, { type: 'radar_ack', remaining: radarResult.remaining });
       } else if (t === 'new_wave' && ws.role === 'game' && ws.code) {
-        const s = sessions.get(ws.code);
+        const s = sessions.resetWaveCounters(ws.code);
         if (s) {
-          s.dropsThisWave = 0;
-          s.suppliesThisWave = 0;
-          s.radarsThisWave = 0;
           if (s.companion) safeSend(s.companion, { type: 'new_wave' });
         }
       } else if (t === 'minimap' && ws.role === 'game' && ws.code) {
-        const s = sessions.get(ws.code);
+        const s = sessions.getByCode(ws.code);
         if (s && s.companion) {
           const fwd = { type: 'minimap', enemies: msg.enemies || [], allies: msg.allies || [], players: msg.players || [], wave: msg.wave, state: msg.state, chopper: msg.chopper };
           safeSend(s.companion, fwd);
         }
       } else if (t === 'bomb_impact' && ws.role === 'game' && ws.code) {
-        const s = sessions.get(ws.code);
+        const s = sessions.getByCode(ws.code);
         if (s && s.companion) {
           const kills = msg.kills ?? 0;
           const isMega = kills >= 5;
           safeSend(s.companion, { type: 'bomb_impact', x: msg.x, y: msg.y, kills, mega: isMega });
         }
       } else if (t === 'supply_impact' && ws.role === 'game' && ws.code) {
-        const s = sessions.get(ws.code);
+        const s = sessions.getByCode(ws.code);
         if (s && s.companion) safeSend(s.companion, { type: 'supply_impact', x: msg.x, y: msg.y });
       } else if (t === 'game_state' && ws.role === 'game' && ws.code) {
-        const s = sessions.get(ws.code);
+        const s = sessions.getByCode(ws.code);
         if (s && s.companion) safeSend(s.companion, { type: 'game_state', state: msg.state });
       } else if (t === 'ping' && ws.role === 'companion') {
+        if (ws.code && typeof msg.timestamp === 'number') {
+          sessions.recordRoundTrip(ws.code, now - msg.timestamp);
+        }
         safeSend(ws, { type: 'pong', timestamp: msg.timestamp });
       }
     } catch (e) { /* ignore malformed */ }
   });
   ws.on('close', () => {
     if (ws.code && ws.role) {
-      const s = sessions.get(ws.code);
+      const s = sessions.detachRole(ws.code, ws.role);
       if (s) {
-        if (ws.role === 'game') s.game = null;
-        else if (ws.role === 'companion') s.companion = null;
-        if (!s.game && !s.companion) sessions.delete(ws.code);
+        if (!s.game && !s.companion) sessions.removeByCode(ws.code);
       }
     }
   });
@@ -245,14 +231,10 @@ const heartbeatInterval = setInterval(() => {
 }, HEARTBEAT_MS);
 
 const expiryInterval = setInterval(() => {
-  const now = Date.now();
-  for (const [code, s] of sessions.entries()) {
-    if (now - s.createdAt > SESSION_EXPIRY_MS) {
-      if (s.game) s.game.terminate?.();
-      if (s.companion) s.companion.terminate?.();
-      sessions.delete(code);
-    }
-  }
+  sessions.sweepExpired((s) => {
+    if (s.game) s.game.terminate?.();
+    if (s.companion) s.companion.terminate?.();
+  });
 }, 60 * 1000);
 
 wss.on('close', () => {
