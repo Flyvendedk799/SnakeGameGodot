@@ -112,7 +112,8 @@ func _draw():
 	# === Minimap ===
 	_draw_minimap()
 
-	# === Companion action notification ===
+	# === Companion combo + action notification ===
+	_draw_combo_meter(font)
 	_draw_companion_action(font)
 
 	# === Contextual barrier repair hint ===
@@ -435,6 +436,22 @@ func _draw_join_prompt(font: Font):
 		_draw_rounded_panel(Rect2(390, 690, 500, 24), Color(0, 0, 0, join_alpha), Color(0.5, 0.5, 0.6, join_alpha * 0.3), 4.0)
 		draw_string(font, Vector2(390, 708), "Player 2: Press F2 or Cross (P2 controller) to join!", HORIZONTAL_ALIGNMENT_CENTER, 500, 12, Color(0.7, 0.7, 0.78, join_alpha + 0.3))
 
+
+func _draw_combo_meter(font: Font):
+	if game.combo_meter <= 0.1 and game.state != game.GameState.WAVE_ACTIVE:
+		return
+	var x = 470.0
+	var y = 58.0
+	var w = 340.0
+	var h = 16.0
+	var intensity = clampf(game.combo_meter / 100.0, 0.0, 1.0)
+	var pulse = 0.75 + 0.25 * sin(anim_time * (4.0 + game.combo_level * 1.8))
+	_draw_rounded_panel(Rect2(x - 10, y - 20, w + 20, 42), Color(0.08, 0.03, 0.12, 0.75), Color(0.8, 0.4, 1.0, 0.2 + intensity * 0.5), 6.0)
+	draw_rect(Rect2(x, y, w, h), Color8(30, 20, 45, 210))
+	draw_rect(Rect2(x, y, w * intensity, h), Color(0.6 + 0.3 * intensity, 0.3 + 0.6 * intensity, 1.0, 0.7 + 0.3 * pulse))
+	draw_rect(Rect2(x, y, w, h), Color(0.9, 0.7, 1.0, 0.5), false, 1.2)
+	draw_string(font, Vector2(x, y - 4), "COMBO LV%d  %.0f%%" % [game.combo_level, game.combo_meter], HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color8(230, 210, 255))
+
 func _draw_companion_action(font: Font):
 	if game.companion_action_feed.is_empty():
 		return
@@ -451,10 +468,14 @@ func _draw_companion_action(font: Font):
 
 	# D-pad hint for helicopter following
 	var show_heli_hint = game.companion_session and game.companion_session.is_session_connected() and game.helicopter_entity and is_instance_valid(game.helicopter_entity)
+	var hint_y = cy_start + game.companion_action_feed.size() * 36
 	if show_heli_hint:
-		var hint_y = cy_start + game.companion_action_feed.size() * 36
 		var hint_alpha = 0.7 + 0.2 * sin(anim_time * 2.0)
 		draw_string(font, Vector2(cx - 160, hint_y + 8), "Hold D-pad Up to follow helicopter", HORIZONTAL_ALIGNMENT_CENTER, 320, 11, Color(0.7, 0.9, 1.0, hint_alpha))
+		hint_y += 16
+	var combos = game.combo_stats
+	var combo_txt = "Combo: M&S %d  Supply %d  EMP %d" % [int(combos["mark_strike"]), int(combos["supply_chain"]), int(combos["emp_followup"])]
+	draw_string(font, Vector2(cx - 170, hint_y + 8), combo_txt, HORIZONTAL_ALIGNMENT_LEFT, 340, 10, Color8(200, 170, 255, 200))
 
 func _draw_hints(font: Font):
 	if hint_reveal <= 0.01:

@@ -116,6 +116,20 @@ const COMPANION_MINIMAP_INTERVAL: float = 0.05  # 20Hz for real-time minimap/cho
 var companion_action_feed: Array = []
 const MAX_COMPANION_ACTIONS: int = 3
 
+# Cross-system combo mechanics
+var combo_meter: float = 0.0
+var combo_level: int = 0
+var combo_decay_per_sec: float = 8.0
+var combo_stats := {
+	"mark_strike": 0,
+	"supply_chain": 0,
+	"emp_followup": 0
+}
+var radar_marks: Array = [] # [{pos: Vector2, timer: float, radius: float, used: bool}]
+var fort_buff_timer: float = 0.0
+var fort_buff_tick: float = 0.0
+var emp_followup_hits: int = 0
+
 func _ready():
 	particles = ParticleSystem.new()
 	_build_scene_tree()
@@ -328,6 +342,9 @@ func _process(delta):
 		wave_announce_timer -= delta
 	if radar_reveal_timer > 0:
 		radar_reveal_timer -= delta
+	_update_combo_meter(delta)
+	_update_radar_marks(delta)
+	_update_fort_buff(delta)
 	# Update companion action feed timers
 	var i = companion_action_feed.size() - 1
 	while i >= 0:
@@ -445,6 +462,12 @@ func _process_wave(delta):
 	wave_director.update(delta)
 
 	for enemy in enemy_container.get_children():
+		if enemy.has_meta("emp_stun_timer"):
+			var stun_left = float(enemy.get_meta("emp_stun_timer")) - delta
+			if stun_left > 0:
+				enemy.set_meta("emp_stun_timer", stun_left)
+				continue
+			enemy.set_meta("emp_stun_timer", 0.0)
 		enemy.update_enemy(delta, self)
 	# Cache ally target counts once per frame (avoids O(allies*enemies) in _find_best_enemy)
 	ally_target_counts.clear()
@@ -488,7 +511,12 @@ func _process_wave(delta):
 		companion_helicopter.set_joystick_input(companion_chopper_input.x, companion_chopper_input.y)
 		companion_helicopter.update_helicopter(delta)
 
+	var emp_hp_snapshot: Dictionary = {}
+	for enemy in enemy_container.get_children():
+		if enemy.has_meta("emp_followup_timer") and float(enemy.get_meta("emp_followup_timer")) > 0:
+			emp_hp_snapshot[enemy] = enemy.current_hp
 	combat_system.resolve_frame(delta)
+	_apply_emp_followup_bonus(emp_hp_snapshot)
 	particles.update(delta)
 	_update_damage_numbers(delta)
 
@@ -641,16 +669,55 @@ func _on_companion_supply_drop(x: float, y: float):
 	projectile_container.add_child(supply)
 
 func _on_companion_bomb_landed(pos: Vector2, kills: int):
-	var text = "Companion bomb: %d kills!" % kills if kills > 0 else "Companion bomb landed!"
+	var bonus_kills = 0
+	var mark_triggered = false
+	for mark in radar_marks:
+		if mark.used:
+			continue
+		if mark.timer > 0 and pos.distance_to(mark.pos) <= mark.radius:
+			mark.used = true
+			mark_triggered = true
+			for enemy in enemy_container.get_children():
+				if enemy.state in [EnemyEntity.EnemyState.DEAD, EnemyEntity.EnemyState.DYING]:
+					continue
+				if enemy.position.distance_to(pos) <= 170.0:
+					var hp_before = enemy.current_hp
+					enemy.take_damage(22, self)
+					if hp_before > 0 and enemy.state in [EnemyEntity.EnemyState.DYING, EnemyEntity.EnemyState.DEAD]:
+						bonus_kills += 1
+			break
+	var total_kills = kills + bonus_kills
+	var text = "Companion bomb: %d kills!" % total_kills if total_kills > 0 else "Companion bomb landed!"
+	if mark_triggered:
+		combo_stats["mark_strike"] += 1
+		_add_combo(12.0 + float(total_kills), "Mark & Strike")
+		text += "  [Mark & Strike]"
 	_add_companion_action(text)
 	if companion_session:
 		var m = map
 		var nx = (pos.x - m.FORT_LEFT) / maxf(m.FORT_RIGHT - m.FORT_LEFT, 1.0)
 		var ny = (pos.y - m.FORT_TOP) / maxf(m.FORT_BOTTOM - m.FORT_TOP, 1.0)
-		companion_session.send_bomb_impact(nx, ny, kills)
+		companion_session.send_bomb_impact(nx, ny, total_kills)
 
 func _on_companion_supply_landed(pos: Vector2):
-	_add_companion_action("Companion supply: Repairs + gold!")
+	var near_damaged = false
+	for b in map.barricades:
+		if b.current_hp < b.max_hp and b.position.distance_to(pos) <= 150.0:
+			near_damaged = true
+			break
+	if not near_damaged:
+		for d in map.doors:
+			if d.reinforced and d.reinforcement_hp < d.max_reinforcement_hp and d.position.distance_to(pos) <= 150.0:
+				near_damaged = true
+				break
+	if near_damaged:
+		fort_buff_timer = 12.0
+		fort_buff_tick = 0.0
+		combo_stats["supply_chain"] += 1
+		_add_combo(10.0, "Supply Chain")
+		_add_companion_action("Supply Chain: Fortified structures boosted!")
+	else:
+		_add_companion_action("Companion supply: Repairs + gold!")
 	if companion_session:
 		var m = map
 		var nx = (pos.x - m.FORT_LEFT) / maxf(m.FORT_RIGHT - m.FORT_LEFT, 1.0)
@@ -907,6 +974,15 @@ func restart_game(restore_map_id: int = -1):
 	chromatic_intensity = 0.0
 	if chromatic_overlay:
 		chromatic_overlay.visible = false
+	combo_meter = 0.0
+	combo_level = 0
+	radar_marks.clear()
+	fort_buff_timer = 0.0
+	fort_buff_tick = 0.0
+	emp_followup_hits = 0
+	combo_stats["mark_strike"] = 0
+	combo_stats["supply_chain"] = 0
+	combo_stats["emp_followup"] = 0
 
 	player_node.position = map.get_fort_center()
 	state = GameState.BETWEEN_WAVES
@@ -1133,6 +1209,90 @@ func _end_screen_draw():
 	"""Reset drawing transform back to world space."""
 	draw_set_transform(Vector2.ZERO, 0, Vector2.ONE)
 
+func _update_combo_meter(delta: float):
+	if combo_meter > 0:
+		combo_meter = maxf(0.0, combo_meter - combo_decay_per_sec * delta)
+	var next_level = int(floor(combo_meter / 25.0))
+	next_level = mini(next_level, 4)
+	if next_level != combo_level:
+		combo_level = next_level
+		if combo_level >= 2:
+			start_chromatic(1.5 + combo_level)
+
+func _update_radar_marks(delta: float):
+	var i = radar_marks.size() - 1
+	while i >= 0:
+		radar_marks[i].timer -= delta
+		if radar_marks[i].timer <= 0:
+			radar_marks.remove_at(i)
+		i -= 1
+
+func _update_fort_buff(delta: float):
+	if fort_buff_timer <= 0:
+		return
+	fort_buff_timer -= delta
+	fort_buff_tick -= delta
+	if fort_buff_tick > 0:
+		return
+	fort_buff_tick = 1.0
+	for b in map.barricades:
+		if b.current_hp < b.max_hp:
+			b.repair(2.0 + combo_level)
+	for d in map.doors:
+		if d.reinforced and d.reinforcement_hp < d.max_reinforcement_hp:
+			d.reinforcement_hp = mini(d.max_reinforcement_hp, d.reinforcement_hp + 1)
+
+func _apply_emp_followup_bonus(emp_hp_snapshot: Dictionary):
+	if emp_hp_snapshot.is_empty():
+		return
+	for enemy in emp_hp_snapshot.keys():
+		if not is_instance_valid(enemy):
+			continue
+		var followup = float(enemy.get_meta("emp_followup_timer", 0.0))
+		if followup <= 0:
+			continue
+		enemy.set_meta("emp_followup_timer", maxf(0.0, followup - 0.1))
+		var hp_before = int(emp_hp_snapshot[enemy])
+		var dealt = hp_before - enemy.current_hp
+		if dealt <= 0:
+			continue
+		var bonus = maxi(1, int(round(dealt * 0.35)))
+		enemy.take_damage(bonus, self)
+		emp_followup_hits += 1
+		combo_stats["emp_followup"] += 1
+		_add_combo(4.0, "EMP Follow-up x%.0f" % (1.35))
+		spawn_damage_number(enemy.position + Vector2(0, -12), "+%d EMP" % bonus, Color8(120, 220, 255))
+
+func _add_combo(amount: float, reason: String):
+	combo_meter = minf(100.0, combo_meter + amount)
+	if reason.length() > 0:
+		_add_companion_action("Combo +%.0f: %s" % [amount, reason])
+
+func _find_radar_clusters() -> Array:
+	var clusters: Array = []
+	var remaining: Array = []
+	for enemy in enemy_container.get_children():
+		if enemy.state in [EnemyEntity.EnemyState.DEAD, EnemyEntity.EnemyState.DYING]:
+			continue
+		remaining.append(enemy)
+	while not remaining.is_empty() and clusters.size() < 3:
+		var seed = remaining.pop_front()
+		var center: Vector2 = seed.position
+		var group: Array = [seed]
+		var idx = remaining.size() - 1
+		while idx >= 0:
+			var e = remaining[idx]
+			if e.position.distance_to(center) <= 130.0:
+				group.append(e)
+				remaining.remove_at(idx)
+			idx -= 1
+		if group.size() >= 2:
+			var sum = Vector2.ZERO
+			for e in group:
+				sum += e.position
+			clusters.append({"pos": sum / float(group.size()), "timer": 6.0, "radius": 130.0, "used": false})
+	return clusters
+
 func _add_companion_action(text: String):
 	"""Add action to companion feed (newest on top)."""
 	if companion_action_feed.size() >= MAX_COMPANION_ACTIONS:
@@ -1145,13 +1305,22 @@ func _on_companion_emp_drop(x: float, y: float):
 	var m = self.map
 	var wx = m.FORT_LEFT + x * (m.FORT_RIGHT - m.FORT_LEFT)
 	var wy = m.FORT_TOP + y * (m.FORT_BOTTOM - m.FORT_TOP)
+	var center = Vector2(wx, wy)
+	for enemy in enemy_container.get_children():
+		if enemy.state in [EnemyEntity.EnemyState.DEAD, EnemyEntity.EnemyState.DYING]:
+			continue
+		if enemy.position.distance_to(center) <= 95.0:
+			enemy.set_meta("emp_stun_timer", 2.0)
+			enemy.set_meta("emp_followup_timer", 3.2)
 	var emp = EmpEffectEntity.new()
-	emp.setup(self, Vector2(wx, wy))
+	emp.setup(self, center)
 	projectile_container.add_child(emp)
 
 func _on_companion_radar_ping():
 	if state != GameState.WAVE_ACTIVE or wave_complete_pending: return
 	radar_reveal_timer = 5.0
-	_add_companion_action("Companion: Radar active!")
+	radar_marks = _find_radar_clusters()
+	_add_combo(6.0, "Radar ping")
+	_add_companion_action("Companion: Radar active! %d marks" % radar_marks.size())
 	if sfx:
 		sfx.play_repair()  # Use existing sound for now

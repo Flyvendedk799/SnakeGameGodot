@@ -40,6 +40,9 @@ let selectedAbility = 'bomb';
 let gameState = 'wave_active';
 let currentWave = 0;
 let radarRevealActive = false;
+let comboMeter = 0;
+let comboLevel = 0;
+let comboReason = '';
 
 // Connection quality
 let latencyMs = 0;
@@ -53,7 +56,10 @@ let stats = {
   totalRadars: 0,
   totalEmps: 0,
   megaStrikes: 0,
-  wavesAssisted: 0
+  wavesAssisted: 0,
+  markStrikes: 0,
+  supplyChains: 0,
+  empFollowups: 0
 };
 
 function loadStats() {
@@ -123,6 +129,14 @@ function playSoundEffect(type) {
       gain.gain.exponentialRampToValueAtTime(0.01, t + 0.1);
       osc.start(t);
       osc.stop(t + 0.1);
+      break;
+    case 'combo':
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(320 + comboLevel * 90, t);
+      gain.gain.setValueAtTime(0.08 + comboLevel * 0.01, t);
+      gain.gain.exponentialRampToValueAtTime(0.01, t + 0.2);
+      osc.start(t);
+      osc.stop(t + 0.2);
       break;
     case 'mega':
       [440, 554, 659].forEach((freq, i) => {
@@ -365,6 +379,10 @@ function setupWsHandlers(socket) {
       const isMega = m.mega === true || (m.kills >= 5);
       const kills = m.kills || 0;
       stats.totalKills += kills;
+      if (m.markStrike) {
+        stats.markStrikes++;
+        addToHistory('🎯', `Mark & Strike: ${kills} kills`, 'Bonus blast radius!');
+      }
       if (isMega) {
         stats.megaStrikes++;
         addToHistory('💥', `MEGA STRIKE! ${kills} kills`, 'Devastating!');
@@ -385,11 +403,27 @@ function setupWsHandlers(socket) {
         }
       }
     } else if (m.type === 'supply_impact') {
-      addToHistory('📦', 'Supply delivered', 'Team supported!');
+      if (m.supplyChain) {
+        stats.supplyChains++;
+        addToHistory('🧱', 'Supply Chain active', 'Fort buff online');
+      } else {
+        addToHistory('📦', 'Supply delivered', 'Team supported!');
+      }
       impactFlash = { x: m.x, y: m.y, type: 'supply', at: Date.now() };
       playSoundEffect('supply');
     } else if (m.type === 'game_state') {
       gameState = m.state || 'wave_active';
+    } else if (m.type === 'combo_update') {
+      if (typeof m.meter === 'number') comboMeter = Math.max(0, Math.min(100, m.meter));
+      if (typeof m.level === 'number') comboLevel = Math.max(0, Math.min(4, m.level));
+      comboReason = m.reason || '';
+      if (comboLevel >= 2) playSoundEffect('combo');
+    } else if (m.type === 'combo_event') {
+      if (m.combo === 'emp_followup') {
+        stats.empFollowups++;
+        addToHistory('⚡', 'EMP Follow-up', m.text || 'Melee amplified');
+        saveStats();
+      }
     } else if (m.type === 'pong') {
       if (m.timestamp && lastPingAt) {
         latencyMs = Date.now() - lastPingAt;
@@ -504,10 +538,17 @@ function getCooldownRemaining(ability) {
 function drawMinimap() {
   const c = minimap.getContext('2d');
   const inner = MM_SIZE - PAD * 2;
-  c.fillStyle = '#1a1520';
+  const comboGlow = Math.min(0.35, comboMeter / 260);
+  c.fillStyle = `rgba(${26 + comboLevel * 8}, ${21 + comboLevel * 5}, ${32 + comboLevel * 12}, 1)`;
   c.fillRect(0, 0, MM_SIZE, MM_SIZE);
-  c.strokeStyle = '#4a3f6a';
+  c.strokeStyle = `rgba(74, 63, 106, ${0.8 + comboGlow})`;
   c.strokeRect(PAD, PAD, inner, inner);
+  if (comboGlow > 0.03) {
+    c.strokeStyle = `rgba(214, 128, 255, ${comboGlow})`;
+    c.lineWidth = 2 + comboLevel * 0.5;
+    c.strokeRect(PAD - 2, PAD - 2, inner + 4, inner + 4);
+    c.lineWidth = 1;
+  }
 
   const toPx = (nx, ny) => [PAD + nx * inner, PAD + ny * inner];
 
@@ -855,7 +896,8 @@ setInterval(() => {
                        gameState === 'game_over' ? 'Game over' : 'Waiting';
     const latencyColor = latencyMs < 100 ? '#4ade80' : latencyMs < 200 ? '#facc15' : '#ef4444';
     const latencyDot = latencyMs > 0 ? `<span style="color:${latencyColor}">●</span> ${latencyMs}ms` : '';
-    const waveHtml = currentWave > 0 ? `Wave ${currentWave} • ${stateLabel} ${latencyDot}` : `${stateLabel} ${latencyDot}`;
+    const comboBadge = comboMeter > 0 ? ` • Combo Lv${comboLevel} ${Math.round(comboMeter)}%` : '';
+    const waveHtml = currentWave > 0 ? `Wave ${currentWave} • ${stateLabel}${comboBadge} ${latencyDot}` : `${stateLabel}${comboBadge} ${latencyDot}`;
     if (waveHtml !== _lastWaveHtml) {
       waveInfoEl.innerHTML = waveHtml;
       _lastWaveHtml = waveHtml;
@@ -907,7 +949,11 @@ btnStats.onclick = () => {
     Supplies: <strong>${stats.totalSupplies}</strong><br>
     Radars Used: <strong>${stats.totalRadars}</strong><br>
     EMPs Used: <strong>${stats.totalEmps}</strong><br>
-    Waves Assisted: <strong>${stats.wavesAssisted}</strong>
+    Waves Assisted: <strong>${stats.wavesAssisted}</strong><br>
+    Mark &amp; Strike: <strong>${stats.markStrikes}</strong><br>
+    Supply Chain: <strong>${stats.supplyChains}</strong><br>
+    EMP Follow-up: <strong>${stats.empFollowups}</strong><br>
+    Live Combo: <strong>Lv${comboLevel} (${Math.round(comboMeter)}%)</strong> ${comboReason ? `- ${comboReason}` : ''}
   `;
 };
 
