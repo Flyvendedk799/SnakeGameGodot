@@ -5,7 +5,7 @@ signal bomb_drop_requested_at_normalized(x: float, y: float)
 signal supply_drop_requested_at_normalized(x: float, y: float)
 signal connection_status_changed(connected: bool)
 
-@export var server_url: String = "wss://your-app.up.railway.app/ws"
+@export var server_url: String = "wss://snakegamegodot-production.up.railway.app/ws"
 
 var _ws: WebSocketPeer
 var _code: String = ""
@@ -46,7 +46,7 @@ func _process(delta: float):
 			_reconnect_backoff = 2.0
 			_connecting = false
 			_ws.send_text(JSON.stringify({ type = "join", code = _code, role = "game" }))
-		while _ws.get_available_packet_count() > 0:
+		while _ws != null and _ws.get_available_packet_count() > 0:
 			var pkt = _ws.get_packet()
 			var txt = pkt.get_string_from_utf8()
 			var data = JSON.parse_string(txt)
@@ -58,6 +58,7 @@ func _process(delta: float):
 						connection_status_changed.emit(false)
 						_code = ""
 						_disconnect()
+						return
 					"bomb_drop":
 						var x = float(data.get("x", 0.5))
 						var y = float(data.get("y", 0.5))

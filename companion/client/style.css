@@ -6,7 +6,7 @@ p { color: #a0a0b0; margin: 0.5rem 0; }
 button { min-width: 180px; min-height: 48px; font-size: 1.1rem; background: #4a3f6a; color: #fff; border: 2px solid #6a5a8a; border-radius: 8px; cursor: pointer; margin: 0.5rem; }
 button:active { background: #5a4f7a; }
 #code { font-size: 2.5rem; letter-spacing: 0.3em; font-weight: bold; color: #80ff90; margin: 1rem 0; }
-#minimap { background: #0d0a12; border: 2px solid #3a3050; border-radius: 8px; margin: 1rem; touch-action: none; cursor: pointer; max-width: 100%; }
+#minimap { background: #0d0a12; border: 2px solid #3a3050; border-radius: 8px; margin: 1rem; touch-action: none; cursor: pointer; max-width: 100%; -webkit-tap-highlight-color: transparent; user-select: none; }
 .hidden { display: none !important; }
 
 #abilityRow { display: flex; gap: 0.75rem; margin: 0.75rem 0; justify-content: center; flex-wrap: wrap; }

@@ -99,8 +99,10 @@ wss.on('connection', (ws) => {
           s.suppliesThisWave = 0;
         }
         safeSend(ws, { type: 'joined', code });
-        if (s.game) safeSend(s.game, { type: 'companion_connected' });
-        if (s.companion) safeSend(s.companion, { type: 'game_connected' });
+        if (s.game && s.companion) {
+          safeSend(s.game, { type: 'companion_connected' });
+          safeSend(s.companion, { type: 'game_connected' });
+        }
       } else if (t === 'helicopter_drop' && ws.role === 'companion' && ws.code) {
         const s = sessions.get(ws.code);
         if (!s || !s.game) return;

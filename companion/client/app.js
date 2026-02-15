@@ -150,9 +150,18 @@ function doDrop(e) {
   ws.send(JSON.stringify(msg));
 }
 
-minimap.addEventListener('pointerdown', (e) => {
+function onMinimapTap(e) {
   e.preventDefault();
+  e.stopPropagation();
   doDrop(e);
+}
+minimap.addEventListener('pointerdown', onMinimapTap, { passive: false });
+minimap.addEventListener('click', onMinimapTap, { passive: false });
+minimap.addEventListener('touchend', (e) => {
+  if (e.changedTouches && e.changedTouches[0]) {
+    e.preventDefault();
+    doDrop({ clientX: e.changedTouches[0].clientX, clientY: e.changedTouches[0].clientY });
+  }
 }, { passive: false });
 
 btnBomb.onclick = () => {
