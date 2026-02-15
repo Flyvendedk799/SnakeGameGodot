@@ -1,241 +1,170 @@
-# Companion Experience – Improvement Plan
+# Companion Improvement Implementation Roadmap
 
-A step-by-step plan to significantly improve the Karen Defense companion system across robustness, features, UX, and performance. **This is a plan only—implementation is separate.**
+This roadmap sequences the companion-system modernization into low-to-high risk phases, with explicit operational guardrails for each release step.
 
----
+## Global SLO Baseline (applies to all phases)
 
-## 1. Robustness
-
-### 1.1 Reconnection & Session Recovery
-**Problem:** Companion or game disconnect causes loss of session; companion must refresh to get new code.
-
-**Plan:**
-- Add `reconnect_token` to session: when session is created, generate a 12-char token; return it to companion in `joined`.
-- Companion stores token; on disconnect, can send `rejoin` with token instead of code. Server looks up session by token.
-- Game stores session token when connected; on disconnect, auto-reconnect using token (not code) so companion doesn’t need to re-share.
-- **Files:** `companion/server/index.js` (session schema, rejoin handler), `companion/client/app.js` (store token, rejoin flow), `karen_defense/systems/companion_session.gd` (store token, rejoin on reconnect).
-
-### 1.2 Graceful Degradation When Game Pauses
-**Problem:** Drops during pause/shop may be “wasted”; companion has no feedback.
-
-**Plan:**
-- Game sends `game_state` to server when state changes: `wave_active`, `between_waves`, `paused`, `level_up`, `game_over`.
-- Server forwards to companion.
-- Companion grays out or disables tap when `game_state !== 'wave_active'`, shows “Wait for combat…”.
-- Optionally: queue drop and execute when wave becomes active (adds complexity).
-- **Files:** `karen_defense/karen_defense.gd` (send state on change), `companion/server/index.js` (forward), `companion/client/app.js` (disable + message).
-
-### 1.3 Malformed Message Handling
-**Plan:**
-- Server: wrap each message handler in try/catch; log malformed messages; never crash.
-- Companion: validate all incoming messages (type, required fields) before use.
-- Godot: use `JSON.parse_string` with null check; validate `data is Dictionary` before accessing.
-- **Files:** All three layers.
-
-### 1.4 WebSocket Reconnection Backoff
-**Plan:**
-- Godot: cap backoff at 30s; add jitter (±2s) to avoid thundering herd.
-- Companion: exponential backoff on reconnect button (e.g. 1s, 2s, 4s) before allowing another attempt.
-- **Files:** `companion_session.gd`, `companion/client/app.js`.
+- **RTT target:** p50 <= 120ms, p95 <= 250ms for companion <-> server ping.
+- **Reconnect success rate target:** >= 98% within 10 seconds after transient disconnect.
+- **Dropped-input rate target:** <= 0.5% of valid user actions.
+- **Session stability target:** >= 99.5% sessions complete without fatal protocol/server errors.
 
 ---
 
-## 2. New Companion Abilities
+## Phase A — Observability, Rejection Messages, Reconnect UX (Low Risk)
 
-### 2.1 Radar Ping
-**Effect:** Reveal enemy positions on minimap for 5 seconds (highlight or pulse).
+### Scope
+- Add end-to-end telemetry for connection lifecycle, command acceptance/rejection, and reconnect attempts.
+- Add explicit rejection messages with machine-readable reasons (`cooldown`, `invalid_state`, `rate_limited`, `malformed`).
+- Improve reconnect UX (backoff messaging, reconnect status banner, retry hints).
 
-**Plan:**
-- Server: new message `radar_ping` from companion; cooldown 60s, 1 per wave.
-- Game: new handler `_on_companion_radar()`; set `radar_reveal_timer = 5.0`; enemies in “revealed” state draw with special highlight on HUD minimap.
-- Companion: new ability button; sends `radar_ping`; UI shows cooldown and “1/1 this wave”.
-- **Files:** `companion/server/index.js`, `companion/client/app.js` + `index.html`, `karen_defense/systems/companion_session.gd`, `karen_defense/karen_defense.gd`, `karen_defense/ui/hud.gd`.
+### Success Metrics (Phase Exit)
+- RTT p95 <= 250ms with live dashboard visibility.
+- Reconnect success rate >= 98% in chaos tests (forced socket drops).
+- Dropped-input rate <= 0.5%, and >= 99% of rejections include structured reason code.
+- Session stability >= 99.5% with zero crash-on-malformed-message incidents.
 
-### 2.2 EMP / Stun
-**Effect:** Stun enemies in 80px radius for 2 seconds.
+### Backward Compatibility Strategy
+- Keep existing message envelope valid; add optional fields only (`reason_code`, `trace_id`, `reconnect_hint`).
+- Consumers must ignore unknown fields.
+- Introduce protocol capability flags in hello/join ack so old clients can still operate without rejection-code parsing.
 
-**Plan:**
-- Server: `emp_drop` with x,y; cooldown 90s, 1 per wave.
-- Game: new `EmpEffectEntity`; apply `stun_timer = 2.0` to enemies in radius; enemies skip AI when stunned.
-- Companion: new ability; same UI pattern as bomb.
-- **Files:** Same pattern as bomb/supply.
+### Rollback Trigger
+- Reconnect success falls below 95% for 15 minutes, or malformed-message handling increases disconnections by >1%.
 
-### 2.3 Shield Booster
-**Effect:** 30% damage reduction for players for 8 seconds.
-
-**Plan:**
-- Server: `shield_request`; cooldown 45s, 1 per wave.
-- Game: set `companion_shield_timer = 8.0`; in `take_damage`, multiply by 0.7 when timer > 0.
-- Companion: single “Shield” button (no map tap).
-- **Files:** Similar pattern; no positional drop.
-
-### 2.4 Ammo / Cooldown Restore
-**Effect:** Restore 1 grenade and reduce weapon cooldowns by 50%.
-
-**Plan:**
-- Server: `ammo_drop` at x,y; cooldown 40s, 2 per wave.
-- Game: spawn pickup at location; player/ally who grabs gets grenade + cooldown reset.
-- Companion: tap map to drop ammo crate.
-- **Files:** New entity + pickup logic.
+### Operational Checklist
+- Enable feature flags: `obs_v1`, `reject_reason_v1`, `reconnect_ux_v1`.
+- Confirm dashboards/alerts are active before traffic ramp.
+- Run canary (5% sessions), then 25%, then 100%.
+- Validate log volume/cost impact.
+- If rollback triggered: disable flags, verify reconnect returns to baseline, preserve logs for postmortem.
 
 ---
 
-## 3. Companion App UX
+## Phase B — Protocol Sequencing and State Unification
 
-### 3.1 Wave & Game State Display
-**Plan:**
-- Game sends `wave_number` and `game_state` in minimap payload (or separate heartbeat).
-- Companion shows “Wave 12” and “In combat” / “Between waves” / “Paused”.
-- **Files:** `karen_defense/karen_defense.gd` (add to minimap or new message), `companion/server/index.js`, `companion/client/app.js` + HTML.
+### Scope
+- Introduce monotonically increasing sequence IDs for action/state messages.
+- Unify authoritative state machine across game/server/companion (`connecting`, `ready`, `active`, `paused`, `ended`, `reconnecting`).
+- Deduplicate and reorder-tolerant processing based on sequence and session epoch.
 
-### 3.2 Improved Minimap Visualization
-**Plan:**
-- Draw fort/keep outlines (match game map) from config or static data.
-- Different sizes for boss enemies (3px) vs normal (1.5px).
-- Smooth interpolation: lerp entity positions over 2–3 frames to reduce jitter.
-- Optional: trail/history dots for recent enemy positions (fade out).
-- **Files:** `companion/client/app.js` (draw logic), optionally `companion/client/minimap_config.json` for fort geometry.
+### Success Metrics (Phase Exit)
+- RTT unchanged from Phase A baseline (no >10ms regression p95).
+- Reconnect success rate >= 98.5% with deterministic state recovery.
+- Dropped-input rate <= 0.3% (improved via de-dupe and ordered apply).
+- Session stability >= 99.7%; protocol mismatch incidents < 0.1% of sessions.
 
-### 3.3 Sound Design
-**Plan:**
-- Add Web Audio / HTML5 Audio: soft “whoosh” on bomb drop, “thud” on impact, “chime” on supply, “beep” on wave start.
-- Toggle in settings: “Sound effects: On/Off”.
-- **Files:** `companion/client/app.js`, `companion/client/sounds/` (asset files), `companion/client/index.html` (toggle).
+### Backward Compatibility Strategy
+- Dual protocol parser: accept legacy unsequenced packets and new sequenced packets.
+- Server emits format based on negotiated capabilities (`protocol_v1`, `protocol_v2_seq`).
+- Maintain legacy state labels via mapping table until all clients upgraded.
 
-### 3.4 First-Time Tutorial
-**Plan:**
-- LocalStorage flag `companion_tutorial_seen`.
-- On first connect: overlay with 3 steps—“Share code”, “Tap map to drop”, “See impact”—with Next/Done.
-- **Files:** `companion/client/app.js`, `companion/client/index.html`, `companion/client/style.css`.
+### Rollback Trigger
+- Sequence desync incidents > 0.5% sessions or duplicate action execution detected in production.
 
-### 3.5 Connection Quality Indicator
-**Plan:**
-- Companion sends `ping` every 5s; server responds `pong` with timestamp.
-- Companion computes RTT; show green / yellow / red dot and optional “XX ms” tooltip.
-- **Files:** `companion/client/app.js`, `companion/server/index.js`.
-
-### 3.6 Accessibility
-**Plan:**
-- Increase tap targets to 48px minimum.
-- Add `aria-label` to buttons and canvas.
-- Support “Reduce motion” / prefers-reduced-motion for impact animations.
-- **Files:** `companion/client/index.html`, `companion/client/app.js`, `companion/client/style.css`.
+### Operational Checklist
+- Deploy parser first (read-new/write-old), then enable write-new for canary.
+- Verify sequence-gap and replay alerts.
+- Run synthetic out-of-order packet tests in staging and canary.
+- Keep legacy writer path hot for one full release cycle.
+- On rollback: force `protocol_v1`, clear seq caches for affected sessions, announce incident window.
 
 ---
 
-## 4. In-Game HUD & Feedback
+## Phase C — Minimap Delta Transport and Render Optimizations
 
-### 4.1 Companion Status Badge
-**Plan:**
-- When companion connected: small badge near minimap—“Companion online” with green dot.
-- When disconnected: “Companion offline” (gray) or hide badge.
-- **Files:** `karen_defense/ui/hud.gd`, `karen_defense/karen_defense.gd` (expose connection state).
+### Scope
+- Replace full-frame minimap payloads with delta updates + periodic keyframes.
+- Add render pipeline optimizations (batch draw, interpolation tuning, adaptive frame pacing).
+- Add recovery path when deltas are missed (request keyframe/resync).
 
-### 4.2 Companion Action Feed
-**Plan:**
-- Extend current notification: show last 2–3 actions in a small vertical feed (e.g. “Bomb: 3 kills”, “Supply dropped”, “Radar active”).
-- Each fades after 3s; newest on top.
-- **Files:** `karen_defense/karen_defense.gd` (array of `{text, timer}`), `karen_defense/ui/hud.gd` (draw list).
+### Success Metrics (Phase Exit)
+- RTT p95 <= 230ms under load (network savings should help).
+- Reconnect success rate >= 98.5% including delta-resync path.
+- Dropped-input rate <= 0.3% (no interaction regressions from render changes).
+- Session stability >= 99.7%; minimap desync complaints < 0.2% sessions.
 
-### 4.3 Companion Cooldown Preview
-**Plan:**
-- Game doesn’t know companion cooldowns. Option A: companion sends `cooldown_status` (bomb_ready_at, supply_ready_at); game shows “Companion: Bomb in 12s”. Option B: keep it companion-only.
-- Implement Option A: new message type, server forward, HUD displays.
-- **Files:** `companion/client/app.js`, `companion/server/index.js`, `karen_defense/systems/companion_session.gd`, `karen_defense/ui/hud.gd`.
+### Backward Compatibility Strategy
+- Support `minimap_full_v1` and `minimap_delta_v2` concurrently.
+- Keyframe contains version + absolute snapshot so legacy decode remains unaffected.
+- Capability negotiation controls whether client receives full or delta stream.
 
-### 4.4 “Hold D-pad Up to follow helicopter” Hint
-**Plan:**
-- When companion connected and helicopter exists: show brief hint below companion notification—“D-pad Up: Look at helicopter”.
-- **Files:** `karen_defense/ui/hud.gd`.
+### Rollback Trigger
+- Delta decode failures > 0.3% sessions, or client render CPU/power usage regresses by >20% median.
 
----
-
-## 5. Server Enhancements
-
-### 5.1 Per-Ability Cooldown Tracking
-**Plan:**
-- Session stores `lastBombAt`, `lastSupplyAt`, `lastRadarAt`, etc.
-- Each ability has `COOLDOWN_MS` and `MAX_PER_WAVE`.
-- Reject with `drop_rejected` + `reason` (“cooldown”, “limit”) when invalid.
-- Companion shows specific feedback.
-- **Files:** `companion/server/index.js`, `companion/client/app.js`.
-
-### 5.2 Debug / Admin Endpoint
-**Plan:**
-- `GET /admin/sessions` (or protected) returns count of active sessions, maybe session IDs (no codes).
-- Useful for monitoring and debugging.
-- **Files:** `companion/server/index.js`.
-
-### 5.3 Session Persistence (Optional)
-**Plan:**
-- Use Redis or in-memory store with TTL for sessions.
-- Survives server restart; companions can reconnect with same code for X minutes.
-- **Files:** `companion/server/index.js`, add Redis client.
+### Operational Checklist
+- Ship decoder first behind `minimap_delta_v2` flag.
+- Canary by platform class (desktop/mobile) to detect device-specific rendering regressions.
+- Monitor payload size, FPS, battery/CPU telemetry.
+- Keep periodic full snapshot fallback enabled during ramp.
+- On rollback: disable delta flag, force full snapshots, invalidate stale delta buffers.
 
 ---
 
-## 6. Performance
+## Phase D — Gameplay Combo Features and Visual Overhaul
 
-### 6.1 Minimap Payload Compression
-**Plan:**
-- Round coordinates to 2 decimals: `[0.12, 0.34]` → `[12, 34]` (scale 100).
-- Cap entities: max 60 enemies, 20 allies.
-- **Files:** `karen_defense/karen_defense.gd`, `companion/client/app.js` (decode).
+### Scope
+- Add combo-oriented companion gameplay interactions (chain bonuses, synchronized assists, contextual effects).
+- Refresh companion visual design, feedback cues, and impact animations.
+- Ensure mechanics are server-authoritative with explicit cooldown/state validation.
 
-### 6.2 Conditional Minimap Sending
-**Plan:**
-- Only send minimap when companion is on “connected” screen (companion sends `view_state: 'minimap'` or similar).
-- Or: reduce frequency when in shop (every 500ms instead of 150ms).
-- **Files:** `karen_defense/karen_defense.gd`, optionally `companion/client/app.js`.
+### Success Metrics (Phase Exit)
+- RTT p95 remains <= 250ms after visual/gameplay additions.
+- Reconnect success rate >= 98% (no regression from feature complexity).
+- Dropped-input rate <= 0.4% while new abilities are active.
+- Session stability >= 99.5%; combo-feature error rate < 0.5% of activations.
 
-### 6.3 Companion Client RAF Throttling
-**Plan:**
-- Cap draw loop at 30 FPS when idle (no new minimap data) to save battery on mobile.
-- **Files:** `companion/client/app.js`.
+### Backward Compatibility Strategy
+- Gate new combo actions behind capability bit (`combo_v1`).
+- Old clients receive translated fallback events (standard action equivalents).
+- Keep legacy UI path and assets while new visual theme rolls out incrementally.
 
----
+### Rollback Trigger
+- Balance or reliability issues: combo actions cause >2% invalid-state rejections or crash rate increases by >0.2%.
 
-## 7. Polish & Delight
-
-### 7.1 Celebration Moments
-**Plan:**
-- When companion gets 5+ kills in one bomb: extra strong haptic, “MEGA STRIKE!” on companion.
-- When supply saves barricade from breaking: “Barricade saved!” flash.
-- **Files:** `companion/client/app.js`, `karen_defense/entities/helicopter_bomb.gd`, `companion/server/index.js` (optional: enhance `bomb_impact` with extra metadata).
-
-### 7.2 Companion-Specific Achievements
-**Plan:**
-- Track: total bombs dropped, total kills, total supplies, waves assisted.
-- Store in localStorage; show “Companion stats” panel.
-- **Files:** `companion/client/app.js`, `companion/client/index.html`.
-
-### 7.3 Theming
-**Plan:**
-- Light/dark theme toggle; store in localStorage.
-- Match Karen Defense color palette (purple, gold accents).
-- **Files:** `companion/client/style.css`, `companion/client/app.js`.
+### Operational Checklist
+- Separate rollout flags for mechanics and visuals (`combo_logic_v1`, `visual_overhaul_v1`).
+- Run gameplay A/B and monitor fairness/retention metrics.
+- Validate accessibility (contrast, motion reduction, touch targets).
+- Provide live-ops kill switch for each new ability.
+- On rollback: disable combo flags, remap queued combo actions to legacy equivalents, clear temporary buffs safely.
 
 ---
 
-## 8. Implementation Order Suggestion
+## Phase E — Scaling, Storage Migration, and Hardening
 
-1. **Robustness first:** Reconnection token, graceful pause handling.
-2. **HUD polish:** Companion badge, action feed, D-pad hint.
-3. **Companion UX:** Wave display, minimap improvements, sounds.
-4. **New abilities:** Radar, then EMP, then Shield (by complexity).
-5. **Performance:** Minimap compression, throttling.
-6. **Polish:** Celebrations, achievements, themes.
+### Scope
+- Migrate ephemeral in-memory session/state to durable scalable storage (e.g., Redis + persistent backing where needed).
+- Add horizontal scaling controls, rate limiting, abuse protection, and disaster-recovery runbooks.
+- Harden protocol/security boundaries (authN/authZ, schema validation, load shedding).
+
+### Success Metrics (Phase Exit)
+- RTT p95 <= 260ms at 3x current peak concurrent sessions.
+- Reconnect success rate >= 99% across node failover events.
+- Dropped-input rate <= 0.3% under peak and failover scenarios.
+- Session stability >= 99.9% with zero data-loss incidents in migration window.
+
+### Backward Compatibility Strategy
+- Dual-write session metadata to old and new stores during migration.
+- Read-path shadowing and consistency checks before read cutover.
+- Message schema remains versioned; old/new nodes interoperate via stable wire contract.
+
+### Rollback Trigger
+- Data consistency mismatch > 0.1% between old/new stores, or failover reconnect success < 97%.
+
+### Operational Checklist
+- Pre-migration backup/snapshot + restoration test.
+- Enable dual-write, then shadow-read validation.
+- Gradual read cutover by shard/tenant.
+- Run failover game-day (node kill, network partition, regional degradation).
+- On rollback: revert reads to old store, keep dual-write until reconciliation complete, execute incident communication + repair plan.
 
 ---
 
-## 9. File Reference
+## Recommended Delivery Cadence
 
-| Area            | Primary Files                                                              |
-|-----------------|----------------------------------------------------------------------------|
-| Server          | `companion/server/index.js`                                                |
-| Companion client| `companion/client/app.js`, `index.html`, `style.css`                       |
-| Godot session   | `karen_defense/systems/companion_session.gd`                               |
-| Godot game      | `karen_defense/karen_defense.gd`                                           |
-| Godot HUD       | `karen_defense/ui/hud.gd`                                                  |
-| Godot entities  | `karen_defense/entities/helicopter_bomb.gd`, `supply_drop.gd`             |
-| Combat          | `karen_defense/systems/combat_system.gd`                                  |
+1. Complete Phase A and hold one stable release cycle.
+2. Deliver Phase B before any high-frequency transport optimization.
+3. Ship Phase C only after sequence/state foundations are proven.
+4. Build player-facing novelty in Phase D once reliability is established.
+5. Finish with Phase E to support long-term scale and resilience.
