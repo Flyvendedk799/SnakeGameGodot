@@ -128,6 +128,25 @@ function incrementReject(ability, s = null) {
   }
 }
 
+
+const COMBO_DECAY_PER_SEC = 7;
+function getComboLevel(meter) {
+  if (meter >= 75) return 4;
+  if (meter >= 50) return 3;
+  if (meter >= 25) return 2;
+  if (meter >= 10) return 1;
+  return 0;
+}
+function applyCombo(s, points, reason, companionOnly = true) {
+  const now = Date.now();
+  const elapsed = Math.max(0, (now - (s.comboUpdatedAt || now)) / 1000);
+  s.comboMeter = Math.max(0, (s.comboMeter || 0) - elapsed * COMBO_DECAY_PER_SEC);
+  s.comboMeter = Math.min(100, s.comboMeter + points);
+  s.comboUpdatedAt = now;
+  s.comboLevel = getComboLevel(s.comboMeter);
+  if (s.companion) safeSend(s.companion, { type: 'combo_update', meter: s.comboMeter, level: s.comboLevel, reason });
+  if (!companionOnly && s.game) safeSend(s.game, { type: 'combo_update', meter: s.comboMeter, level: s.comboLevel, reason });
+}
 app.use(express.static(path.join(__dirname, 'client')));
 
 app.get('/health', (req, res) => res.json({ ok: true }));
@@ -197,7 +216,11 @@ app.get('/session/create', (req, res) => {
     lastRadarAt: 0,
     lastEmpAt: 0,
     reconnectToken: token,
-    relayStateSeq: 0
+    relayStateSeq: 0,
+    comboMeter: 0,
+    comboLevel: 0,
+    comboUpdatedAt: Date.now(),
+    comboStats: { markStrike: 0, supplyChain: 0, empFollowup: 0 }
   });
   res.json({ code, token });
 });
@@ -368,6 +391,22 @@ wss.on('connection', (ws) => {
         const x = Math.max(-1, Math.min(1, Number(msg.x) ?? 0));
         const y = Math.max(-1, Math.min(1, Number(msg.y) ?? 0));
         relayWithTiming(s.game, { type: 'chopper_input', x, y }, ingressAt, s);
+      } else if (t === 'emp_drop' && ws.role === 'companion' && ws.code) {
+        const s = sessions.get(ws.code);
+        if (!s || !s.game) return;
+        sessionRecordMessage(s, t, now);
+        if (s.empsThisWave >= EMP_PER_WAVE || (now - s.lastEmpAt) < COOLDOWN_EMP_MS) {
+          incrementReject('emp', s);
+          return;
+        }
+        const x = Math.max(0, Math.min(1, Number(msg.x) ?? 0.5));
+        const y = Math.max(0, Math.min(1, Number(msg.y) ?? 0.5));
+        s.empsThisWave++;
+        s.lastEmpAt = now;
+        s.lastEmpComboAt = now;
+        relayWithTiming(s.game, { type: 'emp_drop', x, y }, ingressAt, s);
+        safeSend(ws, { type: 'drop_ack', x, y, ability: 'emp', remaining: EMP_PER_WAVE - s.empsThisWave });
+        applyCombo(s, 5, 'EMP Deploy');
       } else if (t === 'radar_ping' && ws.role === 'companion' && ws.code) {
         const s = sessions.get(ws.code);
         if (!s || !s.game) return;
@@ -378,8 +417,10 @@ wss.on('connection', (ws) => {
         }
         s.radarsThisWave++;
         s.lastRadarAt = now;
+        s.lastRadarComboAt = now;
         relayWithTiming(s.game, { type: 'radar_ping' }, ingressAt, s);
         safeSend(ws, { type: 'radar_ack', remaining: RADAR_PER_WAVE - s.radarsThisWave });
+        applyCombo(s, 6, 'Radar Ping');
       } else if (t === 'new_wave' && ws.role === 'game' && ws.code) {
         const s = sessions.get(ws.code);
         if (s) {
@@ -387,7 +428,8 @@ wss.on('connection', (ws) => {
           s.dropsThisWave = 0;
           s.suppliesThisWave = 0;
           s.radarsThisWave = 0;
-          if (s.companion) safeSend(s.companion, { type: 'new_wave' });
+          s.empsThisWave = 0;
+          if (s.companion) safeSend(s.companion, { type: 'new_wave', comboStats: s.comboStats });
         }
       } else if ((t === 'minimap_full' || t === 'minimap_delta') && ws.role === 'game' && ws.code) {
         const s = sessions.get(ws.code);
@@ -415,13 +457,35 @@ wss.on('connection', (ws) => {
           sessionRecordMessage(s, t, now);
           const kills = msg.kills ?? 0;
           const isMega = kills >= 5;
-          relayWithTiming(s.companion, { type: 'bomb_impact', x: msg.x, y: msg.y, kills, mega: isMega }, ingressAt, s);
+          const markStrike = s.lastRadarComboAt && (Date.now() - s.lastRadarComboAt) <= 7000;
+          const empFollowup = s.lastEmpComboAt && (Date.now() - s.lastEmpComboAt) <= 6000;
+          if (markStrike) {
+            s.comboStats.markStrike++;
+            safeSend(s.companion, { type: 'combo_event', combo: 'mark_strike', text: 'Mark & Strike triggered!' });
+          }
+          if (empFollowup) {
+            s.comboStats.empFollowup++;
+            safeSend(s.companion, { type: 'combo_event', combo: 'emp_followup', text: 'EMP Follow-up window converted!' });
+            applyCombo(s, 7, 'EMP Follow-up');
+          }
+          applyCombo(s, (markStrike ? 10 : 4) + Math.min(12, kills), markStrike ? 'Mark & Strike' : 'Bomb Impact');
+          const bombPayload = { type: 'bomb_impact', x: msg.x, y: msg.y, kills, mega: isMega, markStrike, empFollowup };
+          relayWithTiming(s.companion, bombPayload, ingressAt, s);
         }
       } else if (t === 'supply_impact' && ws.role === 'game' && ws.code) {
         const s = sessions.get(ws.code);
         if (s && s.companion) {
           sessionRecordMessage(s, t, now);
-          relayWithTiming(s.companion, { type: 'supply_impact', x: msg.x, y: msg.y }, ingressAt, s);
+          const supplyChain = s.lastDropAt && (Date.now() - s.lastDropAt) <= 8000;
+          if (supplyChain) {
+            s.comboStats.supplyChain++;
+            safeSend(s.companion, { type: 'combo_event', combo: 'supply_chain', text: 'Supply Chain fortified the fort!' });
+            applyCombo(s, 9, 'Supply Chain');
+          } else {
+            applyCombo(s, 4, 'Supply Impact');
+          }
+          const supplyPayload = { type: 'supply_impact', x: msg.x, y: msg.y, supplyChain };
+          relayWithTiming(s.companion, supplyPayload, ingressAt, s);
         }
       } else if (t === 'game_state' && ws.role === 'game' && ws.code) {
         const s = sessions.get(ws.code);
