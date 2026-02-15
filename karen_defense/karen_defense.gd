@@ -95,6 +95,13 @@ var title_hover: int = -1
 # World/map selection (1=Desert 15w, 2=Snow 30w, 3=Jungle 50w)
 var current_map_id: int = 1
 
+# Companion mode (only created when enabled via checkbox on world select)
+var companion_session: CompanionSessionManager = null
+var helicopter_entity: Node2D
+
+# Per-frame cache for ally target selection (avoids O(n*m) iteration)
+var ally_target_counts: Dictionary = {}
+
 func _ready():
 	particles = ParticleSystem.new()
 	_build_scene_tree()
@@ -320,7 +327,8 @@ func _process(delta):
 		map.anim_time += delta
 
 	_update_visibility()
-	queue_redraw()
+	if state != GameState.WORLD_SELECT:
+		queue_redraw()
 
 func _process_title(delta):
 	title_time += delta
@@ -366,6 +374,12 @@ func _process_wave(delta):
 
 	for enemy in enemy_container.get_children():
 		enemy.update_enemy(delta, self)
+	# Cache ally target counts once per frame (avoids O(allies*enemies) in _find_best_enemy)
+	ally_target_counts.clear()
+	for ally in ally_container.get_children():
+		var t = ally.get("target_enemy")
+		if t != null and is_instance_valid(t):
+			ally_target_counts[t] = ally_target_counts.get(t, 0) + 1
 	for ally in ally_container.get_children():
 		ally.update_ally(delta, self)
 	for proj in projectile_container.get_children():
@@ -378,10 +392,16 @@ func _process_wave(delta):
 		elif proj is ExplosionEffect:
 			if proj.update_effect(delta):
 				proj.queue_free()
+		elif proj is SupplyDropEntity:
+			proj.update_supply(delta)
 		else:
 			proj.update_projectile(delta)
 	for gold in gold_container.get_children():
 		gold.update_drop(delta)
+
+	if helicopter_entity and is_instance_valid(helicopter_entity):
+		if helicopter_entity.update_helicopter(delta):
+			helicopter_entity = null
 
 	combat_system.resolve_frame(delta)
 	particles.update(delta)
@@ -482,6 +502,30 @@ func start_wave():
 	var max_waves = map.map_config.get("max_waves", 50)
 	if current_wave == max_waves and sfx:
 		sfx.play_boss_roar()
+	if companion_session and companion_session.is_session_connected():
+		companion_session.notify_new_wave()
+
+
+func _on_companion_bomb_drop(x: float, y: float):
+	if state != GameState.WAVE_ACTIVE or wave_complete_pending: return
+	var map = self.map
+	var wx = map.FORT_LEFT + x * (map.FORT_RIGHT - map.FORT_LEFT)
+	var wy = map.FORT_TOP + y * (map.FORT_BOTTOM - map.FORT_TOP)
+	var heli = HelicopterBombEntity.new()
+	heli.setup(self, Vector2(wx, wy))
+	projectile_container.add_child(heli)
+	if helicopter_entity and is_instance_valid(helicopter_entity):
+		helicopter_entity.queue_free()
+	helicopter_entity = heli
+
+func _on_companion_supply_drop(x: float, y: float):
+	if state != GameState.WAVE_ACTIVE or wave_complete_pending: return
+	var map = self.map
+	var wx = map.FORT_LEFT + x * (map.FORT_RIGHT - map.FORT_LEFT)
+	var wy = map.FORT_TOP + y * (map.FORT_BOTTOM - map.FORT_TOP)
+	var supply = SupplyDropEntity.new()
+	supply.setup(self, Vector2(wx, wy))
+	projectile_container.add_child(supply)
 
 
 func _apply_player_tether(delta: float):
@@ -503,30 +547,39 @@ func _apply_player_tether(delta: float):
 	if overflow > (max_dist - return_dist) and int(Time.get_ticks_msec() / 220) % 2 == 0:
 		spawn_damage_number((player_node.position + player2_node.position) * 0.5, "TOO FAR APART", Color8(255, 170, 90))
 func _update_camera_follow(delta: float):
+	var target: Vector2
 	var points: Array[Vector2] = []
-	if not player_node.is_dead:
-		points.append(player_node.position)
-	if p2_joined and player2_node and not player2_node.is_dead:
-		points.append(player2_node.position)
-	if points.is_empty():
-		points.append(map.get_fort_center())
+	var min_x := 0.0
+	var max_x := 0.0
+	var min_y := 0.0
+	var max_y := 0.0
+	var use_helicopter = companion_session and companion_session.is_session_connected() and helicopter_entity and is_instance_valid(helicopter_entity) and Input.is_action_pressed("look_at_helicopter")
+	if use_helicopter:
+		target = helicopter_entity.position
+	else:
+		if not player_node.is_dead:
+			points.append(player_node.position)
+		if p2_joined and player2_node and not player2_node.is_dead:
+			points.append(player2_node.position)
+		if points.is_empty():
+			points.append(map.get_fort_center())
 
-	var min_x = points[0].x
-	var max_x = points[0].x
-	var min_y = points[0].y
-	var max_y = points[0].y
-	for p in points:
-		min_x = minf(min_x, p.x)
-		max_x = maxf(max_x, p.x)
-		min_y = minf(min_y, p.y)
-		max_y = maxf(max_y, p.y)
+		min_x = points[0].x
+		max_x = points[0].x
+		min_y = points[0].y
+		max_y = points[0].y
+		for p in points:
+			min_x = minf(min_x, p.x)
+			max_x = maxf(max_x, p.x)
+			min_y = minf(min_y, p.y)
+			max_y = maxf(max_y, p.y)
 
-	var target = Vector2((min_x + max_x) * 0.5, (min_y + max_y) * 0.5)
-	if points.size() == 1:
-		if not player_node.is_dead and player_node.is_moving:
-			target += player_node.last_move_dir * 60.0
-		elif p2_joined and player2_node and player2_node.is_moving:
-			target += player2_node.last_move_dir * 60.0
+		target = Vector2((min_x + max_x) * 0.5, (min_y + max_y) * 0.5)
+		if points.size() == 1:
+			if not player_node.is_dead and player_node.is_moving:
+				target += player_node.last_move_dir * 60.0
+			elif p2_joined and player2_node and player2_node.is_moving:
+				target += player2_node.last_move_dir * 60.0
 
 	camera_zoom_punch = lerpf(camera_zoom_punch, 0.0, delta * 5.0)
 	var enemy_count = enemy_container.get_child_count()
@@ -634,6 +687,27 @@ func unpause():
 	if sfx:
 		sfx.play_pause()
 
+func enable_companion_session() -> void:
+	"""Create and attach companion session when user enables companion mode."""
+	if companion_session != null:
+		return
+	companion_session = CompanionSessionManager.new()
+	companion_session.name = "CompanionSession"
+	add_child(companion_session)
+	companion_session.bomb_drop_requested_at_normalized.connect(_on_companion_bomb_drop)
+	companion_session.supply_drop_requested_at_normalized.connect(_on_companion_supply_drop)
+	world_select._on_companion_session_ready()
+
+func disable_companion_session() -> void:
+	"""Remove companion session when user disables companion mode."""
+	if companion_session == null:
+		return
+	companion_session.disconnect_session()
+	companion_session.queue_free()
+	companion_session = null
+	helicopter_entity = null
+	world_select._on_companion_session_removed()
+
 func restart_game(restore_map_id: int = -1):
 	# restore_map_id: -1 = keep current_map_id, else use specified (e.g. after victory)
 	if restore_map_id > 0:
@@ -658,6 +732,9 @@ func restart_game(restore_map_id: int = -1):
 	wave_director.stop()
 	player_node.reset()
 	particles.clear()
+
+	# Reset companion helicopter reference (projectile_container cleared below)
+	helicopter_entity = null
 
 	# Reset P2
 	if p2_joined and player2_node:

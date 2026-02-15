@@ -82,6 +82,9 @@ func _check_projectile_hits():
 		# Skip grenades — they handle their own damage in _explode()
 		if proj is GrenadeEntity:
 			continue
+		# Skip explosion visuals (no source/damage)
+		if proj is ExplosionEffect:
+			continue
 		if proj.source == "player":
 			for enemy in game.enemy_container.get_children():
 				if enemy.state == EnemyEntity.EnemyState.DEAD or enemy.state == EnemyEntity.EnemyState.DYING:

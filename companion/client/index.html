@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+  <title>Karen Defense Companion</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="landing">
+    <h1>Karen Defense</h1>
+    <p>Companion Mode</p>
+    <button id="start">Start as Companion</button>
+  </div>
+  <div id="waiting" class="hidden">
+    <p>Share this code:</p>
+    <p id="code"></p>
+    <button id="copy">Copy</button>
+    <p id="status">Waiting for game...</p>
+    <button id="reconnect" class="hidden">Reconnect</button>
+  </div>
+  <div id="connected" class="hidden">
+    <p id="connStatus"><span class="status-dot online"></span> Connected</p>
+    <div id="abilityRow">
+      <button id="btnBomb" class="ability-btn selected" data-ability="bomb" title="2 per wave, 30s cooldown">
+        <span class="ability-icon">💣</span>
+        <span>Bomb</span>
+      </button>
+      <button id="btnSupply" class="ability-btn" data-ability="supply" title="1 per wave, 45s cooldown">
+        <span class="ability-icon">📦</span>
+        <span>Supply</span>
+      </button>
+    </div>
+    <p id="abilityHint">Tap map to drop bomb (repairs + gold)</p>
+    <canvas id="minimap" width="300" height="300"></canvas>
+    <p id="cooldown"></p>
+    <p id="remaining"></p>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -299,11 +299,10 @@ func _find_best_enemy(game) -> EnemyEntity:
 		# Bonus priority for enemies already attacking barricades
 		if enemy.state == EnemyEntity.EnemyState.ATTACKING_BARRICADE:
 			score -= 80.0
-		# Reduce priority for enemies already targeted by many allies
-		var allies_on_target = 0
-		for ally in game.ally_container.get_children():
-			if ally != self and ally.target_enemy == enemy:
-				allies_on_target += 1
+		# Reduce priority for enemies already targeted by many allies (use cached counts)
+		var allies_on_target = game.ally_target_counts.get(enemy, 0)
+		if target_enemy == enemy:
+			allies_on_target = maxi(0, allies_on_target - 1)  # Exclude self
 		score += allies_on_target * 30.0
 		if score < best_score:
 			best_score = score

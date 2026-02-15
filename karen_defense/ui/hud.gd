@@ -18,6 +18,8 @@ var gold_punch_p2: float = 0.0
 var prev_crystals: int = 0
 var crystal_punch: float = 0.0
 var hint_reveal: float = 0.0  # 0..1 for hint bar slide-up
+var _redraw_accum: float = 0.0
+const HUD_REDRAW_INTERVAL: float = 1.0 / 30.0  # Throttle to 30fps
 
 func _ready():
 	tex_portrait = load("res://assets/WilliamHead.png")
@@ -65,7 +67,10 @@ func _process(delta):
 			hint_reveal = minf(hint_reveal + delta * 2.0, 1.0)
 		else:
 			hint_reveal = maxf(hint_reveal - delta * 3.0, 0.0)
-		queue_redraw()
+		_redraw_accum += delta
+		if _redraw_accum >= HUD_REDRAW_INTERVAL:
+			_redraw_accum = 0.0
+			queue_redraw()
 
 func _draw():
 	if game == null or not visible:
@@ -539,10 +544,15 @@ func _draw_minimap():
 		var b_col = Color8(80, 200, 80) if b.is_intact() else Color8(200, 80, 80, 120)
 		draw_rect(Rect2(bx - 2, by - 1, 4, 2), b_col)
 
-	# Draw enemies (red dots)
+	# Draw enemies (red dots) - cap at 64 to avoid draw spam in huge waves
+	const MAX_ENEMY_DOTS := 64
+	var enemy_drawn := 0
 	for enemy in game.enemy_container.get_children():
+		if enemy_drawn >= MAX_ENEMY_DOTS:
+			break
 		if enemy.state == EnemyEntity.EnemyState.DEAD or enemy.state == EnemyEntity.EnemyState.DYING:
 			continue
+		enemy_drawn += 1
 		var ex = offset_x + enemy.position.x * mm_scale
 		var ey = offset_y + enemy.position.y * mm_scale
 		var dot_size = 1.5

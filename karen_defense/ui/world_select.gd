@@ -12,8 +12,23 @@ var world_rects: Array[Rect2] = []
 const NODE_W: float = 180.0
 const NODE_H: float = 100.0
 
+# Companion mode
+var companion_enabled: bool = false
+var companion_checkbox_rect: Rect2
+var companion_code: String = ""
+var companion_connect_rect: Rect2
+var companion_status: String = ""
+
 func setup(game_ref):
 	game = game_ref
+
+func _on_companion_session_ready():
+	if game.companion_session:
+		game.companion_session.connection_status_changed.connect(_on_companion_status)
+
+func _on_companion_session_removed():
+	companion_code = ""
+	companion_status = ""
 
 func show_select():
 	active = true
@@ -37,6 +52,8 @@ func _build_world_rects():
 	for i in range(3):
 		var x = start_x + i * (NODE_W + gap)
 		world_rects.append(Rect2(x - NODE_W / 2.0, base_y - NODE_H / 2.0, NODE_W, NODE_H))
+	companion_checkbox_rect = Rect2(498, 565, 24, 24)
+	companion_connect_rect = Rect2(500, 620, 280, 50)
 
 func _is_unlocked(world_id: int) -> bool:
 	if world_id == 1:
@@ -69,11 +86,38 @@ func handle_input(event) -> bool:
 	# Mouse click
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
 		var mouse = event.position
+		# Companion checkbox
+		if companion_checkbox_rect.has_point(mouse):
+			companion_enabled = not companion_enabled
+			if companion_enabled:
+				game.enable_companion_session()
+			else:
+				game.disable_companion_session()
+			queue_redraw()
+			return true
 		for i in range(world_rects.size()):
 			if world_rects[i].has_point(mouse) and _is_unlocked(i + 1):
 				_select_world(i + 1)
 				return true
+		# Companion Connect button (only when companion enabled)
+		if companion_enabled and companion_connect_rect.has_point(mouse) and companion_code.length() == 6:
+			if game.companion_session:
+				game.companion_session.connect_with_code(companion_code)
+				companion_status = "Connecting..."
+			return true
+	# Companion code input (keyboard) - only when companion enabled
+	if companion_enabled and event is InputEventKey and event.pressed and not event.echo:
+		if event.keycode == KEY_BACKSPACE:
+			companion_code = companion_code.substr(0, companion_code.length() - 1)
+			return true
+		var ch = String.chr(event.unicode).to_upper()
+		if ch.length() == 1 and ("ABCDEFGHIJKLMNPQRSTUVWXYZ23456789".contains(ch)) and companion_code.length() < 6:
+			companion_code += ch
+			return true
 	return false
+
+func _on_companion_status(connected: bool):
+	companion_status = "Connected!" if connected else "Disconnected"
 
 func _select_world(world_id: int):
 	game.current_map_id = world_id
@@ -84,6 +128,8 @@ func _select_world(world_id: int):
 	game._update_visibility()
 	queue_redraw()
 
+var _redraw_accum: float = 0.0
+const REDRAW_INTERVAL: float = 1.0 / 30.0  # Throttle to ~30fps on menu
 func _process(delta: float):
 	if active:
 		world_time += delta
@@ -93,7 +139,10 @@ func _process(delta: float):
 			if world_rects[i].has_point(mouse):
 				selected_index = i
 				break
-		queue_redraw()
+		_redraw_accum += delta
+		if _redraw_accum >= REDRAW_INTERVAL:
+			_redraw_accum = 0.0
+			queue_redraw()
 
 func _draw():
 	if not active:
@@ -197,6 +246,22 @@ func _draw():
 
 	# Footer
 	draw_string(font, Vector2(0, 660), "D-Pad/L Stick: Select  |  Cross/Space: Start  |  Circle/Esc: Back to Launcher", HORIZONTAL_ALIGNMENT_CENTER, 1280, 14, Color8(130, 130, 150))
+
+	# Companion section - checkbox and optional code input
+	# Enable Companion checkbox
+	draw_rect(companion_checkbox_rect, Color8(50, 45, 70))
+	draw_rect(Rect2(companion_checkbox_rect.position.x + 1, companion_checkbox_rect.position.y + 1, companion_checkbox_rect.size.x - 2, companion_checkbox_rect.size.y - 2), Color8(80, 70, 100), false, 1.5)
+	if companion_enabled:
+		draw_rect(Rect2(companion_checkbox_rect.position.x + 6, companion_checkbox_rect.position.y + 6, 12, 12), Color8(100, 220, 140))
+	draw_string(font, Vector2(530, 582), "Enable Companion (host code, bombs, supply drops)", HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color8(180, 170, 200))
+
+	# Code input + connect (only when companion enabled)
+	if companion_enabled:
+		draw_string(font, Vector2(500, 608), "Enter 6-char code from companion app:", HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color8(180, 170, 200))
+		draw_rect(companion_connect_rect, Color8(60, 55, 80))
+		draw_string(font, Vector2(510, 652), (companion_code + "______").substr(0, 6), HORIZONTAL_ALIGNMENT_LEFT, -1, 22, Color.WHITE)
+		var status_txt = "Connected!" if (game.companion_session and game.companion_session.is_session_connected()) else (companion_status if companion_status else "Connect")
+		draw_string(font, Vector2(510, 675), status_txt, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color8(100, 220, 150))
 
 func _draw_pill(rect: Rect2, color: Color):
 	var r = minf(rect.size.y / 2.0, 8.0)

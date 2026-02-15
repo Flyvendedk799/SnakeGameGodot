@@ -54,6 +54,7 @@ var barricades: Array = []
 var spawn_points: Array[Vector2] = []
 var wall_rects: Array[Rect2] = []
 var obstacle_rects: Array[Rect2] = []
+var terrain_rects: Array = []  # Array of {rect: Rect2, type: TerrainType, blocks_movement: bool, blocks_vision: bool, movement_penalty: float}
 var bg_texture: Texture2D = null
 var bg_tint: Color = Color(1.0, 1.0, 1.0)
 var map_config: Dictionary = {}
@@ -229,11 +230,21 @@ func _rebuild_obstacles():
 	var fort_w = FORT_RIGHT - FORT_LEFT
 	var fort_h = FORT_BOTTOM - FORT_TOP
 	obstacle_rects.clear()
+	terrain_rects.clear()
+
+	# Build obstacles
 	for r in MapConfig.obstacles_to_rects(
 		map_config.get("obstacles", []),
 		FORT_LEFT, FORT_TOP, fort_w, fort_h
 	):
 		obstacle_rects.append(r)
+
+	# Build terrain
+	for t in MapConfig.terrain_to_rects(
+		map_config.get("terrain", []),
+		FORT_LEFT, FORT_TOP, fort_w, fort_h
+	):
+		terrain_rects.append(t)
 
 func _build_maze():
 	"""Generate internal corridor walls and door positions for the maze layout."""
@@ -430,6 +441,10 @@ func get_nearest_closed_door(pos: Vector2, range_dist: float):
 # --- Collision ---
 
 func resolve_collision(pos: Vector2, radius: float) -> Vector2:
+	# Push out of terrain that blocks movement
+	for t in terrain_rects:
+		if t.blocks_movement:
+			pos = _push_out_of_rect(pos, radius, t.rect)
 	# Push out of outer wall segments
 	for rect in wall_rects:
 		pos = _push_out_of_rect(pos, radius, rect)
@@ -495,6 +510,9 @@ func _draw():
 
 	# === FORT INTERIOR (lighter area inside outer walls) ===
 	draw_rect(Rect2(FORT_LEFT, FORT_TOP, FORT_RIGHT - FORT_LEFT, FORT_BOTTOM - FORT_TOP), Color8(85, 70, 50, 140))
+
+	# === TERRAIN FEATURES (water, cliffs, elevation, rough ground) ===
+	_draw_terrain()
 
 	# === RING INTERIOR FLOOR (between ring walls and keep) ===
 	draw_rect(Rect2(ring_left, ring_top, ring_right - ring_left, ring_bottom - ring_top), Color8(75, 62, 45, 100))
@@ -698,3 +716,72 @@ func _draw_corridor_block(x: float, y: float, w: float, h: float):
 			var bx_end = minf(bx_start + brick_w, x + w)
 			if bx_end > x:
 				draw_line(Vector2(bx_start, by), Vector2(bx_end, by), Color8(80, 64, 44, 70), 0.8)
+
+func _draw_terrain():
+	"""Draw AA-quality terrain features: water, cliffs, elevation, rough ground."""
+	for t in terrain_rects:
+		var rect = t.rect
+		match t.type:
+			MapConfig.TerrainType.WATER:
+				# Water - blue with animated ripples
+				draw_rect(rect, Color8(45, 85, 140, 200))
+				draw_rect(rect, Color8(65, 105, 160, 120))
+				draw_rect(rect, Color8(35, 75, 130), false, 2.0)
+				# Ripple lines
+				for i in range(3):
+					var y_pos = rect.position.y + (rect.size.y * (i + 1) / 4.0) + sin(anim_time * 2.0 + i) * 4
+					draw_line(Vector2(rect.position.x, y_pos), Vector2(rect.position.x + rect.size.x, y_pos), Color8(75, 115, 170, 80), 1.5)
+
+			MapConfig.TerrainType.CLIFF:
+				# Cliffs - dark gray with jagged edges
+				draw_rect(Rect2(rect.position.x + 3, rect.position.y + 3, rect.size.x, rect.size.y), Color8(30, 30, 35))
+				draw_rect(rect, Color8(65, 60, 55))
+				draw_rect(Rect2(rect.position.x, rect.position.y, rect.size.x, rect.size.y * 0.3), Color8(85, 80, 75))
+				draw_rect(rect, Color8(40, 38, 36), false, 2.5)
+				# Rock texture lines
+				for i in range(int(rect.size.y / 15)):
+					var y = rect.position.y + i * 15 + randf() * 5
+					draw_line(Vector2(rect.position.x, y), Vector2(rect.position.x + rect.size.x, y), Color8(50, 48, 45, 100), 1.0)
+
+			MapConfig.TerrainType.ROUGH:
+				# Rough terrain - brown/tan with scattered texture
+				var roughness_alpha = int(100 + t.movement_penalty * 100)
+				draw_rect(rect, Color8(110, 90, 65, roughness_alpha))
+				draw_rect(rect, Color8(95, 75, 50, roughness_alpha / 2))
+				# Scattered rough patches
+				for i in range(int(rect.size.x * rect.size.y / 400)):
+					var px = rect.position.x + randf() * rect.size.x
+					var py = rect.position.y + randf() * rect.size.y
+					draw_circle(Vector2(px, py), 3 + randf() * 3, Color8(85, 70, 45, 120))
+
+			MapConfig.TerrainType.ELEVATION_HIGH:
+				# High ground - lighter with edge highlight
+				draw_rect(Rect2(rect.position.x - 2, rect.position.y - 2, rect.size.x, rect.size.y), Color8(40, 35, 30))
+				draw_rect(rect, Color8(120, 105, 85, 140))
+				draw_rect(Rect2(rect.position.x, rect.position.y, rect.size.x, rect.size.y * 0.4), Color8(140, 125, 105, 100))
+				draw_rect(rect, Color8(100, 90, 70), false, 1.5)
+
+			MapConfig.TerrainType.ELEVATION_LOW:
+				# Low ground - darker with inset shadow
+				draw_rect(rect, Color8(50, 45, 38, 160))
+				draw_rect(Rect2(rect.position.x + 2, rect.position.y + 2, rect.size.x - 4, rect.size.y - 4), Color8(65, 58, 48, 120))
+				draw_rect(rect, Color8(40, 36, 30), false, 1.5)
+
+			MapConfig.TerrainType.CHASM:
+				# Chasm - very dark with depth illusion
+				draw_rect(rect, Color8(20, 18, 16))
+				draw_rect(Rect2(rect.position.x + 4, rect.position.y + 4, rect.size.x - 8, rect.size.y - 8), Color8(15, 13, 11))
+				draw_rect(rect, Color8(35, 30, 28), false, 2.0)
+				# Depth lines
+				for i in range(3):
+					var inset = 8 + i * 6
+					draw_rect(Rect2(rect.position.x + inset, rect.position.y + inset, rect.size.x - inset * 2, rect.size.y - inset * 2), Color8(25 - i * 5, 23 - i * 5, 21 - i * 5), false, 1.0)
+
+			MapConfig.TerrainType.BRIDGE:
+				# Bridge - wooden planks over gap
+				draw_rect(rect, Color8(100, 75, 50))
+				# Plank lines
+				var plank_w = 12.0
+				for px in range(int(rect.position.x), int(rect.position.x + rect.size.x), int(plank_w)):
+					draw_line(Vector2(px, rect.position.y), Vector2(px, rect.position.y + rect.size.y), Color8(70, 55, 35), 2.0)
+				draw_rect(rect, Color8(80, 60, 40), false, 2.0)
