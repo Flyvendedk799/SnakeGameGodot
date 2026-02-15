@@ -2,6 +2,7 @@ class_name CompanionSessionManager
 extends Node
 
 signal bomb_drop_requested_at_normalized(x: float, y: float)
+signal chopper_input_received(ax: float, ay: float)
 signal supply_drop_requested_at_normalized(x: float, y: float)
 signal emp_drop_requested_at_normalized(x: float, y: float)
 signal radar_ping_requested()
@@ -91,6 +92,10 @@ func _process(delta: float):
 						emp_drop_requested_at_normalized.emit(x, y)
 					"radar_ping":
 						radar_ping_requested.emit()
+					"chopper_input":
+						var ax = float(data.get("x", 0))
+						var ay = float(data.get("y", 0))
+						chopper_input_received.emit(ax, ay)
 	elif state == WebSocketPeer.STATE_CLOSED:
 		connection_status_changed.emit(false)
 		_ws = null

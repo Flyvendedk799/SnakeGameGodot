@@ -98,7 +98,9 @@ var current_map_id: int = 1
 
 # Companion mode (only created when enabled via checkbox on world select)
 var companion_session: CompanionSessionManager = null
-var helicopter_entity: Node2D
+var helicopter_entity: Node2D  # One-shot bomb heli (fallback when companion heli busy)
+var companion_helicopter: CompanionHelicopterEntity = null  # Persistent joystick-controlled heli
+var companion_chopper_input: Vector2 = Vector2.ZERO
 
 # Per-frame cache for ally target selection (avoids O(n*m) iteration)
 var ally_target_counts: Dictionary = {}
@@ -108,7 +110,7 @@ var radar_reveal_timer: float = 0.0
 
 # Companion minimap broadcast throttle
 var _companion_minimap_timer: float = 0.0
-const COMPANION_MINIMAP_INTERVAL: float = 0.15
+const COMPANION_MINIMAP_INTERVAL: float = 0.1  # 10Hz for snappier real-time feel
 
 # Companion action HUD notification (array of {text, timer})
 var companion_action_feed: Array = []
@@ -478,6 +480,10 @@ func _process_wave(delta):
 		if helicopter_entity.update_helicopter(delta):
 			helicopter_entity = null
 
+	if companion_helicopter and is_instance_valid(companion_helicopter):
+		companion_helicopter.set_joystick_input(companion_chopper_input.x, companion_chopper_input.y)
+		companion_helicopter.update_helicopter(delta)
+
 	combat_system.resolve_frame(delta)
 	particles.update(delta)
 	_update_damage_numbers(delta)
@@ -518,6 +524,7 @@ func _wave_complete():
 	# Visible round transition: show clear message, then open shop (no freeze)
 	wave_complete_pending = true
 	wave_complete_timer = 2.5
+	_remove_companion_helicopter()
 	wave_announce_text = "WAVE %d COMPLETE!" % current_wave
 	wave_announce_sub = "Shop opening in %.0fs..." % wave_complete_timer
 	wave_announce_timer = 2.5
@@ -579,16 +586,41 @@ func start_wave():
 		sfx.play_boss_roar()
 	if companion_session and companion_session.is_session_connected():
 		companion_session.notify_new_wave()
+		# Spawn persistent joystick-controlled helicopter for companion
+		_ensure_companion_helicopter()
 
+
+func _ensure_companion_helicopter():
+	if companion_helicopter and is_instance_valid(companion_helicopter):
+		return
+	companion_helicopter = CompanionHelicopterEntity.new()
+	companion_helicopter.setup(self)
+	projectile_container.add_child(companion_helicopter)
+
+func _remove_companion_helicopter():
+	if companion_helicopter and is_instance_valid(companion_helicopter):
+		companion_helicopter.queue_free()
+		companion_helicopter = null
+	companion_chopper_input = Vector2.ZERO
+
+func _on_companion_chopper_input(ax: float, ay: float):
+	companion_chopper_input.x = clampf(ax, -1.0, 1.0)
+	companion_chopper_input.y = clampf(ay, -1.0, 1.0)
 
 func _on_companion_bomb_drop(x: float, y: float):
 	if state != GameState.WAVE_ACTIVE or wave_complete_pending: return
-	_add_companion_action("Companion: Bomb inbound!")
 	var map = self.map
 	var wx = map.FORT_LEFT + x * (map.FORT_RIGHT - map.FORT_LEFT)
 	var wy = map.FORT_TOP + y * (map.FORT_BOTTOM - map.FORT_TOP)
+	var target_pos = Vector2(wx, wy)
+	# Use companion helicopter if available and idle; otherwise one-shot heli
+	if companion_helicopter and is_instance_valid(companion_helicopter):
+		if companion_helicopter.request_bomb_drop(target_pos):
+			_add_companion_action("Companion: Bomb inbound!")
+			return
+	_add_companion_action("Companion: Bomb inbound!")
 	var heli = HelicopterBombEntity.new()
-	heli.setup(self, Vector2(wx, wy))
+	heli.setup(self, target_pos)
 	projectile_container.add_child(heli)
 	if helicopter_entity and is_instance_valid(helicopter_entity):
 		helicopter_entity.queue_free()
@@ -647,9 +679,10 @@ func _update_camera_follow(delta: float):
 	var max_x := 0.0
 	var min_y := 0.0
 	var max_y := 0.0
-	var use_helicopter = companion_session and companion_session.is_session_connected() and helicopter_entity and is_instance_valid(helicopter_entity) and Input.is_action_pressed("look_at_helicopter")
+	var heli_to_follow = companion_helicopter if (companion_helicopter and is_instance_valid(companion_helicopter)) else helicopter_entity
+	var use_helicopter = companion_session and companion_session.is_session_connected() and heli_to_follow and is_instance_valid(heli_to_follow) and Input.is_action_pressed("look_at_helicopter")
 	if use_helicopter:
-		target = helicopter_entity.position
+		target = heli_to_follow.position
 	else:
 		if not player_node.is_dead:
 			points.append(player_node.position)
@@ -792,6 +825,7 @@ func enable_companion_session() -> void:
 	companion_session.supply_drop_requested_at_normalized.connect(_on_companion_supply_drop)
 	companion_session.emp_drop_requested_at_normalized.connect(_on_companion_emp_drop)
 	companion_session.radar_ping_requested.connect(_on_companion_radar_ping)
+	companion_session.chopper_input_received.connect(_on_companion_chopper_input)
 	world_select._on_companion_session_ready()
 
 func disable_companion_session() -> void:
@@ -802,6 +836,7 @@ func disable_companion_session() -> void:
 	companion_session.queue_free()
 	companion_session = null
 	helicopter_entity = null
+	_remove_companion_helicopter()
 	world_select._on_companion_session_removed()
 
 func restart_game(restore_map_id: int = -1):

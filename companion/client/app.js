@@ -31,6 +31,7 @@ const RADAR_PER_WAVE = 1;
 const EMP_PER_WAVE = 1;
 const MM_SIZE = 300;
 const PAD = 10;
+const CHOPPER_INPUT_THROTTLE_MS = 80;  // ~12 Hz
 
 let ws = null, sessionCode = null, reconnectToken = null;
 let lastBombAt = 0, lastSupplyAt = 0, lastRadarAt = 0, lastEmpAt = 0;
@@ -70,68 +71,71 @@ function saveStats() {
 
 loadStats();
 
-// Sound effects (Web Audio API)
+// Sound effects (Web Audio API) - lazy resume on mobile (blocks until first tap)
 let soundEnabled = true;
-const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+let audioCtx = null;
+function getAudioCtx() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  return audioCtx;
+}
 
 function playSoundEffect(type) {
-  if (!soundEnabled || !audioCtx) return;
-  const osc = audioCtx.createOscillator();
-  const gain = audioCtx.createGain();
+  if (!soundEnabled) return;
+  const ctx = getAudioCtx();
+  if (!ctx) return;
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
   osc.connect(gain);
-  gain.connect(audioCtx.destination);
+  gain.connect(ctx.destination);
 
+  const t = ctx.currentTime;
   switch(type) {
     case 'drop':
-      // Whoosh sound - descending tone
-      osc.frequency.setValueAtTime(600, audioCtx.currentTime);
-      osc.frequency.exponentialRampToValueAtTime(200, audioCtx.currentTime + 0.15);
-      gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.15);
-      osc.start();
-      osc.stop(audioCtx.currentTime + 0.15);
+      osc.frequency.setValueAtTime(600, t);
+      osc.frequency.exponentialRampToValueAtTime(200, t + 0.15);
+      gain.gain.setValueAtTime(0.15, t);
+      gain.gain.exponentialRampToValueAtTime(0.01, t + 0.15);
+      osc.start(t);
+      osc.stop(t + 0.15);
       break;
     case 'impact':
-      // Thud - low frequency pulse
       osc.type = 'sine';
-      osc.frequency.setValueAtTime(80, audioCtx.currentTime);
-      gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.2);
-      osc.start();
-      osc.stop(audioCtx.currentTime + 0.2);
+      osc.frequency.setValueAtTime(80, t);
+      gain.gain.setValueAtTime(0.2, t);
+      gain.gain.exponentialRampToValueAtTime(0.01, t + 0.2);
+      osc.start(t);
+      osc.stop(t + 0.2);
       break;
     case 'supply':
-      // Chime - pleasant ascending notes
       osc.type = 'sine';
-      osc.frequency.setValueAtTime(523, audioCtx.currentTime);
-      osc.frequency.setValueAtTime(659, audioCtx.currentTime + 0.08);
-      gain.gain.setValueAtTime(0.12, audioCtx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.25);
-      osc.start();
-      osc.stop(audioCtx.currentTime + 0.25);
+      osc.frequency.setValueAtTime(523, t);
+      osc.frequency.setValueAtTime(659, t + 0.08);
+      gain.gain.setValueAtTime(0.12, t);
+      gain.gain.exponentialRampToValueAtTime(0.01, t + 0.25);
+      osc.start(t);
+      osc.stop(t + 0.25);
       break;
     case 'radar':
-      // Beep - short blip
       osc.type = 'square';
-      osc.frequency.setValueAtTime(880, audioCtx.currentTime);
-      gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1);
-      osc.start();
-      osc.stop(audioCtx.currentTime + 0.1);
+      osc.frequency.setValueAtTime(880, t);
+      gain.gain.setValueAtTime(0.1, t);
+      gain.gain.exponentialRampToValueAtTime(0.01, t + 0.1);
+      osc.start(t);
+      osc.stop(t + 0.1);
       break;
     case 'mega':
-      // Mega strike - big satisfying chord
       [440, 554, 659].forEach((freq, i) => {
-        const o = audioCtx.createOscillator();
-        const g = audioCtx.createGain();
+        const o = ctx.createOscillator();
+        const g = ctx.createGain();
         o.connect(g);
-        g.connect(audioCtx.destination);
+        g.connect(ctx.destination);
         o.type = 'triangle';
-        o.frequency.setValueAtTime(freq, audioCtx.currentTime);
-        g.gain.setValueAtTime(0.08, audioCtx.currentTime);
-        g.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.4);
-        o.start(audioCtx.currentTime + i * 0.05);
-        o.stop(audioCtx.currentTime + 0.4 + i * 0.05);
+        o.frequency.setValueAtTime(freq, t);
+        g.gain.setValueAtTime(0.08, t);
+        g.gain.exponentialRampToValueAtTime(0.01, t + 0.4);
+        o.start(t + i * 0.05);
+        o.stop(t + 0.4 + i * 0.05);
       });
       break;
   }
@@ -255,6 +259,10 @@ style.textContent = `
 document.head.appendChild(style);
 
 let minimapData = { enemies: [], allies: [], players: [] };
+
+// Joystick state for helicopter control
+let joystickActive = false;
+let joystickLastSent = 0;
 let impactFlash = null;
 // Smooth interpolation for entity positions
 let prevMinimapData = { enemies: [], allies: [], players: [] };
@@ -516,33 +524,31 @@ function drawMinimap() {
   c.lineWidth = 1.0;
   c.strokeRect(PAD + inner * 0.35, PAD + inner * 0.35, inner * 0.3, inner * 0.3);
 
-  // Smooth lerp for enemies (reduces jitter)
-  minimapLerpT = Math.min(minimapLerpT + 0.3, 1.0);
-  for (let i = 0; i < Math.min(minimapData.enemies.length, 80); i++) {
+  // Smooth lerp (reduces jitter); cap at 50 enemies on mobile for perf
+  const enemyCap = window.innerWidth < 768 ? 50 : 80;
+  minimapLerpT = Math.min(minimapLerpT + 0.4, 1.0);
+  const pulsePhase = radarRevealActive ? Math.sin(Date.now() / 200) * 1.5 : 0;
+  for (let i = 0; i < Math.min(minimapData.enemies.length, enemyCap); i++) {
     const e = minimapData.enemies[i];
     let px, py;
     if (i < prevMinimapData.enemies.length && minimapLerpT < 1.0) {
       const prev = prevMinimapData.enemies[i];
-      const lx = prev[0] + (e[0] - prev[0]) * minimapLerpT;
-      const ly = prev[1] + (e[1] - prev[1]) * minimapLerpT;
-      [px, py] = toPx(lx, ly);
+      px = PAD + (prev[0] + (e[0] - prev[0]) * minimapLerpT) * inner;
+      py = PAD + (prev[1] + (e[1] - prev[1]) * minimapLerpT) * inner;
     } else {
       [px, py] = toPx(e[0], e[1]);
     }
-    // Boss enemies are larger (3px) - detect if enemy is boss (e[2] flag if present)
     const isBoss = e.length > 2 && e[2] === true;
     const dotSize = isBoss ? 3 : 1.5;
-    c.fillStyle = isBoss ? 'rgba(255, 40, 40, 1.0)' : 'rgba(255, 80, 80, 0.9)';
+    c.fillStyle = isBoss ? '#ff2828' : 'rgba(255, 80, 80, 0.95)';
     c.beginPath();
     c.arc(px, py, dotSize, 0, Math.PI * 2);
     c.fill();
-    // Radar pulse effect
     if (radarRevealActive) {
-      const pulseSize = dotSize + 3 + Math.sin(Date.now() / 150) * 1.5;
-      c.strokeStyle = 'rgba(100, 200, 255, 0.7)';
-      c.lineWidth = 1.5;
+      c.strokeStyle = 'rgba(100, 200, 255, 0.6)';
+      c.lineWidth = 1;
       c.beginPath();
-      c.arc(px, py, pulseSize, 0, Math.PI * 2);
+      c.arc(px, py, dotSize + 3 + pulsePhase, 0, Math.PI * 2);
       c.stroke();
     }
   }
@@ -607,6 +613,10 @@ function doDrop(e) {
     setTimeout(() => minimap.classList.remove('reject-flash'), 200);
     return;
   }
+  // Immediate visual feedback before server ack (feels more responsive)
+  _hapticFeedback();
+  minimap.classList.add('drop-flash');
+  setTimeout(() => minimap.classList.remove('drop-flash'), 150);
   const r = minimap.getBoundingClientRect();
   const rw = Math.max(1, r.width);
   const rh = Math.max(1, r.height);
@@ -655,6 +665,92 @@ btnEmp.onclick = () => {
   btnSupply.classList.remove('selected');
   abilityHintEl.textContent = abilityInfo.emp.hint;
 };
+// Virtual joystick for helicopter control (only visible in game - companion watches TV)
+function initJoystick() {
+  const base = document.getElementById('joystickBase');
+  const stick = document.getElementById('joystickStick');
+  if (!base || !stick) return;
+
+  const RADIUS = 42;  // max stick travel from center
+  const BASE_RADIUS = 55;  // half of 110px base
+
+  function sendChopperInput(x, y) {
+    if (!ws || ws.readyState !== 1) return;
+    const now = Date.now();
+    if (x === 0 && y === 0) {
+      ws.send(JSON.stringify({ type: 'chopper_input', x: 0, y: 0 }));
+      joystickLastSent = now;
+    } else if (now - joystickLastSent >= CHOPPER_INPUT_THROTTLE_MS) {
+      ws.send(JSON.stringify({ type: 'chopper_input', x, y }));
+      joystickLastSent = now;
+    }
+  }
+
+  function getCenter(el) {
+    const r = el.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  }
+
+  function clampStick(dx, dy) {
+    const len = Math.sqrt(dx * dx + dy * dy);
+    if (len <= 0) return { dx: 0, dy: 0, nx: 0, ny: 0 };
+    const clamp = Math.min(len, RADIUS);
+    const s = clamp / len;
+    const cdx = dx * s, cdy = dy * s;
+    return { dx: cdx, dy: cdy, nx: cdx / RADIUS, ny: cdy / RADIUS };
+  }
+
+  function updateStick(cdx, cdy) {
+    stick.style.transform = `translate(calc(-50% + ${cdx}px), calc(-50% + ${cdy}px))`;
+  }
+
+  function onStart(e) {
+    e.preventDefault();
+    joystickActive = true;
+    base.classList.add('active');
+    const touch = e.touches ? e.touches[0] : e;
+    if (touch) {
+      const cx = getCenter(base);
+      const dx = (touch.clientX - cx.x);
+      const dy = (touch.clientY - cx.y);
+      const { dx: cdx, dy: cdy, nx, ny } = clampStick(dx, dy);
+      updateStick(cdx, cdy);
+      sendChopperInput(nx, ny);
+    }
+  }
+
+  function onMove(e) {
+    if (!joystickActive) return;
+    e.preventDefault();
+    const touch = e.touches ? e.touches[0] : e;
+    const cx = getCenter(base);
+    const dx = (touch.clientX - cx.x);
+    const dy = (touch.clientY - cx.y);
+    const { dx: cdx, dy: cdy, nx, ny } = clampStick(dx, dy);
+    updateStick(cdx, cdy);
+    sendChopperInput(nx, ny);
+  }
+
+  function onEnd(e) {
+    if (!joystickActive) return;
+    e.preventDefault();
+    joystickActive = false;
+    base.classList.remove('active');
+    updateStick(0, 0);
+    sendChopperInput(0, 0);
+  }
+
+  base.addEventListener('pointerdown', onStart, { passive: false });
+  base.addEventListener('touchstart', onStart, { passive: false });
+  window.addEventListener('pointermove', onMove, { passive: false });
+  window.addEventListener('touchmove', onMove, { passive: false });
+  window.addEventListener('pointerup', onEnd, { passive: false });
+  window.addEventListener('pointercancel', onEnd, { passive: false });
+  window.addEventListener('touchend', onEnd, { passive: false });
+  window.addEventListener('touchcancel', onEnd, { passive: false });
+}
+initJoystick();
+
 btnRadar.onclick = () => {
   // Radar is instant - no map tap needed
   if (!ws || ws.readyState !== 1) return;
@@ -722,15 +818,17 @@ function updateAbilityButtons() {
   });
 }
 
+// Cache last UI values to reduce DOM writes (better mobile perf)
+let _lastCooldownText = '', _lastRemainingText = '', _lastWaveHtml = '', _lastMinimapOpacity = '';
+
 setInterval(() => {
   updateAbilityButtons();
 
   const info = abilityInfo[selectedAbility];
   const rem = getCooldownRemaining(selectedAbility);
   const remSec = Math.ceil(rem / 1000);
-  const left = selectedAbility === 'bomb' ? bombsRemaining : suppliesRemaining;
+  const left = selectedAbility === 'bomb' ? bombsRemaining : selectedAbility === 'supply' ? suppliesRemaining : selectedAbility === 'emp' ? empsRemaining : radarsRemaining;
 
-  // Update wave info with latency
   if (waveInfoEl) {
     const stateLabel = gameState === 'wave_active' ? 'In combat' :
                        gameState === 'between_waves' ? 'Shopping' :
@@ -738,39 +836,49 @@ setInterval(() => {
                        gameState === 'level_up' ? 'Leveling up' :
                        gameState === 'game_over' ? 'Game over' : 'Waiting';
     const latencyColor = latencyMs < 100 ? '#4ade80' : latencyMs < 200 ? '#facc15' : '#ef4444';
-    const latencyDot = latencyMs > 0 ? `<span style="color: ${latencyColor}">●</span> ${latencyMs}ms` : '';
-    waveInfoEl.innerHTML = currentWave > 0 ? `Wave ${currentWave} • ${stateLabel} ${latencyDot}` : `${stateLabel} ${latencyDot}`;
+    const latencyDot = latencyMs > 0 ? `<span style="color:${latencyColor}">●</span> ${latencyMs}ms` : '';
+    const waveHtml = currentWave > 0 ? `Wave ${currentWave} • ${stateLabel} ${latencyDot}` : `${stateLabel} ${latencyDot}`;
+    if (waveHtml !== _lastWaveHtml) {
+      waveInfoEl.innerHTML = waveHtml;
+      _lastWaveHtml = waveHtml;
+    }
   }
 
   if (gameState !== 'wave_active') {
-    cooldownEl.textContent = 'Wait for combat...';
+    const cdText = 'Wait for combat...';
     const stateText = gameState === 'between_waves' ? 'Shop open' :
                       gameState === 'paused' ? 'Game paused' :
                       gameState === 'level_up' ? 'Level up' :
                       gameState === 'game_over' ? 'Game over' : 'Waiting...';
-    remainingEl.textContent = stateText;
-    minimap.style.opacity = '0.5';
+    if (cdText !== _lastCooldownText) { cooldownEl.textContent = cdText; _lastCooldownText = cdText; }
+    if (stateText !== _lastRemainingText) { remainingEl.textContent = stateText; _lastRemainingText = stateText; }
+    if (_lastMinimapOpacity !== '0.5') { minimap.style.opacity = '0.5'; _lastMinimapOpacity = '0.5'; }
   } else {
-    cooldownEl.textContent = rem > 0 ? `Cooldown: ${remSec}s` : 'Ready!';
-    if (selectedAbility === 'radar') {
-      remainingEl.textContent = `${radarsRemaining}/${RADAR_PER_WAVE} left this wave`;
-    } else if (selectedAbility === 'emp') {
-      remainingEl.textContent = `${empsRemaining}/${EMP_PER_WAVE} left this wave`;
-    } else {
-      remainingEl.textContent = `${left}/${info.maxPerWave} left this wave`;
-    }
-    minimap.style.opacity = '1.0';
+    const cdText = rem > 0 ? `Cooldown: ${remSec}s` : 'Ready!';
+    const remText = selectedAbility === 'radar' ? `${radarsRemaining}/${RADAR_PER_WAVE} left` :
+                    selectedAbility === 'emp' ? `${empsRemaining}/${EMP_PER_WAVE} left` :
+                    `${left}/${info.maxPerWave} left`;
+    if (cdText !== _lastCooldownText) { cooldownEl.textContent = cdText; _lastCooldownText = cdText; }
+    if (remText !== _lastRemainingText) { remainingEl.textContent = remText; _lastRemainingText = remText; }
+    if (_lastMinimapOpacity !== '1') { minimap.style.opacity = '1'; _lastMinimapOpacity = '1'; }
   }
 }, 400);
 
-function tick() {
+// Throttle draw to 30fps on mobile for less lag and battery
+let lastDrawTime = 0;
+const DRAW_INTERVAL_MS = 33;
+function tick(now) {
+  const t = typeof now === 'number' ? now : performance.now();
   if (connected.classList.contains('hidden') === false) {
-    drawMinimap();
+    if (t - lastDrawTime >= DRAW_INTERVAL_MS) {
+      lastDrawTime = t;
+      drawMinimap();
+    }
   }
   requestAnimationFrame(tick);
 }
 drawMinimap();
-tick();
+requestAnimationFrame(tick);
 
 btnStats.onclick = () => {
   statsPanel.classList.remove('hidden');

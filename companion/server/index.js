@@ -82,7 +82,7 @@ wss.on('connection', (ws) => {
       ws.msgWindowStart = now;
       ws.msgCount = 0;
     }
-    if (++ws.msgCount > RATE_LIMIT_MSGS) return;
+    if (t !== 'chopper_input' && ++ws.msgCount > RATE_LIMIT_MSGS) return;
     try {
       const msg = JSON.parse(raw.toString());
       if (typeof msg !== 'object' || msg === null || Array.isArray(msg)) return;
@@ -175,6 +175,12 @@ wss.on('connection', (ws) => {
         s.lastSupplyAt = now;
         safeSend(s.game, { type: 'supply_drop', x, y });
         safeSend(ws, { type: 'drop_ack', x, y, ability: 'supply', remaining: SUPPLIES_PER_WAVE - s.suppliesThisWave });
+      } else if (t === 'chopper_input' && ws.role === 'companion' && ws.code) {
+        const s = sessions.get(ws.code);
+        if (!s || !s.game) return;
+        const x = Math.max(-1, Math.min(1, Number(msg.x) ?? 0));
+        const y = Math.max(-1, Math.min(1, Number(msg.y) ?? 0));
+        safeSend(s.game, { type: 'chopper_input', x, y });
       } else if (t === 'radar_ping' && ws.role === 'companion' && ws.code) {
         const s = sessions.get(ws.code);
         if (!s || !s.game) return;
