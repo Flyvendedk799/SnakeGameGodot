@@ -26,6 +26,12 @@ const RATE_LIMIT_MSGS = 50;
 const RATE_LIMIT_WINDOW_MS = 10000;
 const SESSION_EXPIRY_MS = 2 * 60 * 60 * 1000; // 2 hours
 const METRICS_WINDOW_MS = 5 * 60 * 1000;
+const CREATE_WINDOW_MS = 60 * 1000;
+const CREATE_MAX_PER_IP = 6;
+const CREATE_MAX_ACTIVE_SESSIONS_PER_IP = 4;
+const MAX_POINT_LIST_ITEMS = 256;
+
+const createAttemptsByIp = new Map();
 
 const metrics = {
   pingSamples: [],
@@ -151,6 +157,34 @@ app.use(express.static(path.join(__dirname, 'client')));
 
 app.get('/health', (req, res) => res.json({ ok: true }));
 
+function getClientIp(req) {
+  const fwd = req.headers['x-forwarded-for'];
+  if (typeof fwd === 'string' && fwd.trim()) return fwd.split(',')[0].trim();
+  return req.socket?.remoteAddress || 'unknown';
+}
+
+function logEvent(reason, details = {}) {
+  console.warn(JSON.stringify({ level: 'warn', event: 'companion_server_reject', reason, at: Date.now(), ...details }));
+}
+
+function cleanupCreateAttempts(now) {
+  for (const [ip, entries] of createAttemptsByIp.entries()) {
+    const fresh = entries.filter((ts) => now - ts <= CREATE_WINDOW_MS);
+    if (fresh.length) createAttemptsByIp.set(ip, fresh);
+    else createAttemptsByIp.delete(ip);
+  }
+}
+
+function cleanupExpiredSessions(now) {
+  for (const [code, s] of sessions.entries()) {
+    if (now - s.createdAt > SESSION_EXPIRY_MS) sessions.delete(code);
+  }
+}
+
+function sendClientError(ws, code = 'request_rejected') {
+  safeSend(ws, { type: 'error', message: code, code });
+}
+
 app.get('/metrics', (req, res) => {
   const now = nowMs();
   pruneOld(metrics.pingSamples, now);
@@ -200,6 +234,28 @@ app.get('/metrics', (req, res) => {
 });
 
 app.get('/session/create', (req, res) => {
+  const now = Date.now();
+  const ip = getClientIp(req);
+  cleanupCreateAttempts(now);
+  cleanupExpiredSessions(now);
+
+  const attempts = createAttemptsByIp.get(ip) || [];
+  const recentAttempts = attempts.filter((ts) => now - ts <= CREATE_WINDOW_MS);
+  if (recentAttempts.length >= CREATE_MAX_PER_IP) {
+    logEvent('session_create_rate_limited', { ip, recentAttempts: recentAttempts.length });
+    res.status(429).json({ error: 'rate_limited' });
+    return;
+  }
+  const activeSessions = Array.from(sessions.values()).filter((s) => s.ownerIp === ip).length;
+  if (activeSessions >= CREATE_MAX_ACTIVE_SESSIONS_PER_IP) {
+    logEvent('session_create_active_limit', { ip, activeSessions });
+    res.status(429).json({ error: 'rate_limited' });
+    return;
+  }
+
+  recentAttempts.push(now);
+  createAttemptsByIp.set(ip, recentAttempts);
+
   let code;
   do { code = makeCode(); } while (sessions.has(code));
   const token = makeToken();
@@ -220,10 +276,142 @@ app.get('/session/create', (req, res) => {
     comboMeter: 0,
     comboLevel: 0,
     comboUpdatedAt: Date.now(),
-    comboStats: { markStrike: 0, supplyChain: 0, empFollowup: 0 }
+    comboStats: { markStrike: 0, supplyChain: 0, empFollowup: 0 },
+    ownerIp: ip
   });
   res.json({ code, token });
 });
+
+function isObject(v) { return typeof v === 'object' && v !== null && !Array.isArray(v); }
+function hasOnlyKeys(obj, allowed) {
+  const keys = Object.keys(obj);
+  return keys.length === allowed.length && keys.every((k) => allowed.includes(k));
+}
+function parseBoundedNumber(v, min, max) {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return null;
+  if (v < min || v > max) return null;
+  return v;
+}
+function parseBoundedInt(v, min, max) {
+  if (typeof v !== 'number' || !Number.isInteger(v)) return null;
+  if (v < min || v > max) return null;
+  return v;
+}
+function parsePoint(v) {
+  if (!Array.isArray(v) || v.length !== 2) return null;
+  const x = parseBoundedNumber(v[0], 0, 1);
+  const y = parseBoundedNumber(v[1], 0, 1);
+  if (x === null || y === null) return null;
+  return [x, y];
+}
+function parsePointList(v, maxItems = MAX_POINT_LIST_ITEMS) {
+  if (!Array.isArray(v) || v.length > maxItems) return null;
+  const parsed = [];
+  for (const item of v) {
+    const p = parsePoint(item);
+    if (!p) return null;
+    parsed.push(p);
+  }
+  return parsed;
+}
+
+function parseInboundMessage(msg) {
+  if (!isObject(msg) || typeof msg.type !== 'string') return null;
+  switch (msg.type) {
+    case 'join': {
+      if (!hasOnlyKeys(msg, ['type', 'code', 'role'])) return null;
+      if (typeof msg.code !== 'string' || !/^[A-Z2-9]{6}$/.test(msg.code.toUpperCase())) return null;
+      if (msg.role !== 'game' && msg.role !== 'companion') return null;
+      return { type: 'join', code: msg.code.toUpperCase(), role: msg.role };
+    }
+    case 'rejoin': {
+      if (!hasOnlyKeys(msg, ['type', 'token', 'role'])) return null;
+      if (typeof msg.token !== 'string' || !/^[A-Z2-9]{12}$/.test(msg.token.toUpperCase())) return null;
+      if (msg.role !== 'game' && msg.role !== 'companion') return null;
+      return { type: 'rejoin', token: msg.token.toUpperCase(), role: msg.role };
+    }
+    case 'helicopter_drop':
+    case 'supply_drop':
+    case 'emp_drop': {
+      if (!hasOnlyKeys(msg, ['type', 'x', 'y'])) return null;
+      const x = parseBoundedNumber(msg.x, 0, 1);
+      const y = parseBoundedNumber(msg.y, 0, 1);
+      if (x === null || y === null) return null;
+      return { type: msg.type, x, y };
+    }
+    case 'chopper_input': {
+      if (!hasOnlyKeys(msg, ['type', 'x', 'y'])) return null;
+      const x = parseBoundedNumber(msg.x, -1, 1);
+      const y = parseBoundedNumber(msg.y, -1, 1);
+      if (x === null || y === null) return null;
+      return { type: 'chopper_input', x, y };
+    }
+    case 'radar_ping':
+    case 'new_wave':
+      if (!hasOnlyKeys(msg, ['type'])) return null;
+      return { type: msg.type };
+    case 'minimap': {
+      const keys = ['type', 'enemies', 'allies', 'players', 'wave', 'state', 'chopper'];
+      if (!Object.keys(msg).every((k) => keys.includes(k))) return null;
+      const enemies = parsePointList(msg.enemies ?? []);
+      const allies = parsePointList(msg.allies ?? []);
+      const players = parsePointList(msg.players ?? []);
+      if (!enemies || !allies || !players) return null;
+      if (msg.wave !== undefined && parseBoundedInt(msg.wave, 0, 9999) === null) return null;
+      if (msg.state !== undefined && typeof msg.state !== 'string') return null;
+      if (msg.chopper !== undefined && parsePoint(msg.chopper) === null) return null;
+      return { type: 'minimap', enemies, allies, players, wave: msg.wave, state: msg.state, chopper: msg.chopper };
+    }
+    case 'bomb_impact': {
+      if (!hasOnlyKeys(msg, ['type', 'x', 'y', 'kills'])) return null;
+      const x = parseBoundedNumber(msg.x, 0, 1);
+      const y = parseBoundedNumber(msg.y, 0, 1);
+      const kills = parseBoundedInt(msg.kills, 0, 999);
+      if (x === null || y === null || kills === null) return null;
+      return { type: 'bomb_impact', x, y, kills };
+    }
+    case 'supply_impact': {
+      if (!hasOnlyKeys(msg, ['type', 'x', 'y'])) return null;
+      const x = parseBoundedNumber(msg.x, 0, 1);
+      const y = parseBoundedNumber(msg.y, 0, 1);
+      if (x === null || y === null) return null;
+      return { type: 'supply_impact', x, y };
+    }
+    case 'game_state': {
+      if (!hasOnlyKeys(msg, ['type', 'state'])) return null;
+      if (typeof msg.state !== 'string' || msg.state.length < 1 || msg.state.length > 64) return null;
+      return { type: 'game_state', state: msg.state };
+    }
+    case 'ping': {
+      if (!hasOnlyKeys(msg, ['type', 'timestamp'])) return null;
+      if (parseBoundedInt(msg.timestamp, 0, Number.MAX_SAFE_INTEGER) === null) return null;
+      return { type: 'ping', timestamp: msg.timestamp };
+    }
+    default:
+      return null;
+  }
+}
+
+const ABILITY_LIMITS = {
+  bomb: { countKey: 'dropsThisWave', lastKey: 'lastDropAt', maxPerWave: BOMBS_PER_WAVE, cooldownMs: COOLDOWN_BOMB_MS, burstWindowMs: 10000, burstMax: 1 },
+  supply: { countKey: 'suppliesThisWave', lastKey: 'lastSupplyAt', maxPerWave: SUPPLIES_PER_WAVE, cooldownMs: COOLDOWN_SUPPLY_MS, burstWindowMs: 10000, burstMax: 1 },
+  radar: { countKey: 'radarsThisWave', lastKey: 'lastRadarAt', maxPerWave: RADAR_PER_WAVE, cooldownMs: COOLDOWN_RADAR_MS, burstWindowMs: 10000, burstMax: 1 },
+  emp: { countKey: 'empsThisWave', lastKey: 'lastEmpAt', maxPerWave: EMP_PER_WAVE, cooldownMs: COOLDOWN_EMP_MS, burstWindowMs: 10000, burstMax: 1 }
+};
+
+function tryConsumeAbility(s, ability, now) {
+  const cfg = ABILITY_LIMITS[ability];
+  if (!cfg) return { ok: false, reason: 'unknown_ability' };
+  if (s[cfg.countKey] >= cfg.maxPerWave) return { ok: false, reason: 'wave_budget_exhausted' };
+  if ((now - s[cfg.lastKey]) < cfg.cooldownMs) return { ok: false, reason: 'cooldown_active' };
+  const bucket = (s.burstBuckets?.[ability] || []).filter((ts) => now - ts <= cfg.burstWindowMs);
+  if (bucket.length >= cfg.burstMax) return { ok: false, reason: 'burst_limit' };
+  bucket.push(now);
+  s.burstBuckets[ability] = bucket;
+  s[cfg.countKey]++;
+  s[cfg.lastKey] = now;
+  return { ok: true, remaining: cfg.maxPerWave - s[cfg.countKey] };
+}
 
 function safeSend(ws, obj) {
   if (!ws || ws.readyState !== 1) return false;
@@ -266,21 +454,28 @@ wss.on('connection', (ws) => {
   ws.on('message', (raw) => {
     const now = Date.now();
     const ingressAt = now;
-    if (raw.length > MAX_MSG_SIZE) return;
+    if (raw.length > MAX_MSG_SIZE) {
+      logEvent('ws_message_too_large', { role: ws.role, code: ws.code, size: raw.length });
+      return;
+    }
     if (ws.msgWindowStart + RATE_LIMIT_WINDOW_MS < now) {
       ws.msgWindowStart = now;
       ws.msgCount = 0;
     }
-    let msg, t;
+    let msg;
     try {
       msg = JSON.parse(raw.toString());
       if (typeof msg !== 'object' || msg === null || Array.isArray(msg)) return;
       t = msg.type;
       if (typeof t !== 'string') return;
-    } catch (e) { return; }
+    } catch (e) {
+      logEvent('ws_json_parse_failed', { role: ws.role, code: ws.code });
+      return;
+    }
     recordMessageEvent(t, now);
     if (t !== 'chopper_input' && ++ws.msgCount > RATE_LIMIT_MSGS) {
       incrementReject('rate_limit', ws.code ? sessions.get(ws.code) : null);
+      logEvent('ws_rate_limited', { role: ws.role, code: ws.code });
       return;
     }
     try {
@@ -289,17 +484,18 @@ wss.on('connection', (ws) => {
         if (code.length !== 6) return;
         let s = sessions.get(code);
         if (!s) {
-          incrementReject('invalid_session');
+          incrementReject('invalid_session', null);
+          logEvent('join_invalid_code', { role: msg.role, code });
           safeSend(ws, { type: 'error', message: 'Invalid code' });
           return;
         }
         if (now - s.createdAt > SESSION_EXPIRY_MS) {
           sessions.delete(code);
+          logEvent('join_session_expired', { role: msg.role, code });
           safeSend(ws, { type: 'error', message: 'Session expired' });
           return;
         }
         ws.role = msg.role === 'game' ? 'game' : msg.role === 'companion' ? 'companion' : null;
-        if (!ws.role) return;
         ws.code = code;
         sessionRecordMessage(s, t, now);
         if (ws.role === 'game') s.game = ws;
@@ -317,7 +513,6 @@ wss.on('connection', (ws) => {
           safeSend(s.companion, { type: 'game_connected' });
         }
       } else if (t === 'rejoin' && msg.token && msg.role) {
-        // Reconnect with token instead of code
         const token = String(msg.token).toUpperCase();
         if (token.length !== 12) return;
         let foundSession = null;
@@ -330,16 +525,17 @@ wss.on('connection', (ws) => {
           }
         }
         if (!foundSession) {
+          logEvent('rejoin_invalid_token', { role: msg.role });
           safeSend(ws, { type: 'error', message: 'Invalid token' });
           return;
         }
         if (now - foundSession.createdAt > SESSION_EXPIRY_MS) {
           sessions.delete(foundCode);
+          logEvent('rejoin_session_expired', { role: msg.role, code: foundCode });
           safeSend(ws, { type: 'error', message: 'Session expired' });
           return;
         }
         ws.role = msg.role === 'game' ? 'game' : msg.role === 'companion' ? 'companion' : null;
-        if (!ws.role) return;
         ws.code = foundCode;
         sessionRecordMessage(foundSession, t, now);
         if (ws.role === 'game') foundSession.game = ws;
@@ -524,7 +720,10 @@ wss.on('connection', (ws) => {
           sessionRecordSample(s, 'pingSamples', qos.rttMs, now);
         }
       }
-    } catch (e) { /* ignore malformed */ }
+    } catch (e) {
+      logEvent('ws_handler_exception', { role: ws.role, code: ws.code, message: e?.message });
+      sendClientError(ws);
+    }
   });
   ws.on('close', () => {
     if (ws.code && ws.role) {

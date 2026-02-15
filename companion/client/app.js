@@ -305,7 +305,6 @@ const abilityInfo = {
   emp: { cooldownMs: COOLDOWN_EMP_MS, maxPerWave: EMP_PER_WAVE, hint: 'Tap map to stun enemies (2s)', needsTap: true }
 };
 
-
 function connectionQualityTier() {
   if (!ws || ws.readyState !== 1) return { label: 'Offline', color: '#ef4444' };
   if (latencyMs <= 0) return { label: 'Syncing', color: '#a78bfa' };
@@ -328,18 +327,19 @@ function setupWsHandlers(socket) {
   socket.onmessage = (e) => {
     let m;
     try { m = JSON.parse(e.data); } catch (_) { return; }
-    // Validate message structure
     if (typeof m !== 'object' || m === null || Array.isArray(m)) return;
     if (typeof m.type !== 'string') return;
 
     if (m.type === 'error') {
-      const msg = m.message || 'Unknown error';
-      if (msg.includes('Invalid code')) {
+      const msg = m.message || m.code || 'Unknown error';
+      if (typeof msg === 'string' && msg.includes('Invalid code')) {
         showError('Invalid Code', 'The session code is incorrect or expired. Please create a new session.');
-      } else if (msg.includes('expired')) {
+      } else if (typeof msg === 'string' && msg.includes('expired')) {
         showError('Session Expired', 'Your session has expired after 2 hours. Please create a new session.');
+      } else if (msg === 'invalid_session') {
+        showError('Session Error', 'Session invalid or expired. Create a new one.');
       } else {
-        showError('Connection Error', msg);
+        showError('Connection Error', typeof msg === 'string' ? msg : 'Request rejected by server.');
       }
       return;
     }
@@ -500,7 +500,15 @@ function _hapticFeedback() {
 startBtn.onclick = async () => {
   try {
     const r = await fetch('/session/create');
+    if (!r.ok) {
+      showError('Rate Limited', 'Too many session requests. Please wait a moment and try again.');
+      return;
+    }
     const d = await r.json();
+    if (!d || typeof d.code !== 'string' || typeof d.token !== 'string') {
+      showError('Connection Error', 'Invalid server response. Please retry.');
+      return;
+    }
     sessionCode = d.code;
     reconnectToken = d.token;
     codeEl.textContent = sessionCode;
