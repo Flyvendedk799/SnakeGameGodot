@@ -62,6 +62,104 @@ func emit_speed_streak(x: float, y: float, dir: Vector2, color: Color):
 	p.gravity_mult = 0.0
 	particles.append(p)
 
+func emit_ring(x: float, y: float, color: Color, count: int = 10):
+	"""Perfect circular burst - good for double jumps, shockwaves."""
+	_enforce_limit(count)
+	for i in range(count):
+		var angle = (float(i) / float(count)) * TAU
+		var spd = 200.0
+		var p = Particle.new(x, y, cos(angle) * spd, sin(angle) * spd, color, 0.4, 3)
+		p.shape = Particle.Shape.CIRCLE
+		p.gravity_mult = 0.0
+		particles.append(p)
+
+func emit_fountain(x: float, y: float, color: Color, count: int = 12):
+	"""Upward geyser effect."""
+	_enforce_limit(count)
+	for i in range(count):
+		var spread = randf_range(-0.5, 0.5)
+		var spd = randf_range(200.0, 400.0)
+		var p = Particle.new(x, y, spread * 100.0, -spd, color, 0.6, randi_range(3, 5))
+		p.gravity_mult = 1.5
+		particles.append(p)
+
+func emit_sparkle(x: float, y: float, color: Color, count: int = 6):
+	"""Gentle floating sparkles."""
+	_enforce_limit(count)
+	for i in range(count):
+		var p = Particle.new(x + randf_range(-20, 20), y + randf_range(-20, 20),
+			randf_range(-20, 20), randf_range(-40, -10), color, 0.8, 2)
+		p.gravity_mult = -0.3
+		p.shape = Particle.Shape.CIRCLE
+		particles.append(p)
+
+func emit_trail_puff(x: float, y: float, color: Color):
+	"""Single small puff for movement trails."""
+	if particles.size() >= MAX_PARTICLES:
+		return
+	var p = Particle.new(x + randf_range(-3, 3), y, randf_range(-15, 15), randf_range(-30, -5), color, 0.3, 2)
+	p.gravity_mult = 0.0
+	particles.append(p)
+
+func emit_fire(x: float, y: float, count: int = 8):
+	"""Upward-drifting fire particles."""
+	_enforce_limit(count)
+	for i in range(count):
+		var col = [Color8(255, 200, 50), Color8(255, 150, 30), Color8(255, 80, 20)][randi() % 3]
+		var p = Particle.new(x + randf_range(-8, 8), y, randf_range(-20, 20), randf_range(-120, -60), col, 0.5, randi_range(2, 4))
+		p.gravity_mult = -0.8
+		p.shape = Particle.Shape.CIRCLE
+		particles.append(p)
+
+func emit_smoke(x: float, y: float, count: int = 5):
+	"""Slow rising gray smoke."""
+	_enforce_limit(count)
+	for i in range(count):
+		var gray = randf_range(0.3, 0.6)
+		var col = Color(gray, gray, gray, 0.5)
+		var p = Particle.new(x + randf_range(-10, 10), y, randf_range(-10, 10), randf_range(-40, -15), col, 1.0, randi_range(4, 7))
+		p.gravity_mult = -0.2
+		p.shape = Particle.Shape.CIRCLE
+		particles.append(p)
+
+func emit_blood(x: float, y: float, dir: Vector2, count: int = 8):
+	"""Directional red splatter."""
+	_enforce_limit(count)
+	var base_angle = dir.angle()
+	for i in range(count):
+		var angle = base_angle + randf_range(-0.5, 0.5)
+		var spd = randf_range(100.0, 300.0)
+		var col = Color8(200, 20, 20).lerp(Color8(120, 10, 10), randf())
+		var p = Particle.new(x, y, cos(angle) * spd, sin(angle) * spd, col, 0.4, randi_range(2, 4))
+		p.gravity_mult = 1.5
+		p.shape = Particle.Shape.STREAK if randf() < 0.3 else Particle.Shape.CIRCLE
+		particles.append(p)
+
+func emit_electric(x: float, y: float, count: int = 6):
+	"""Fast jagged electric sparks (white/cyan)."""
+	_enforce_limit(count)
+	for i in range(count):
+		var col = Color8(200, 240, 255) if randf() < 0.5 else Color8(100, 200, 255)
+		var angle = randf() * TAU
+		var spd = randf_range(250.0, 500.0)
+		var p = Particle.new(x, y, cos(angle) * spd, sin(angle) * spd, col, 0.2, 2)
+		p.gravity_mult = 0.0
+		p.shape = Particle.Shape.STREAK
+		p.streak_length = 8.0
+		p.spin_speed = randf_range(-15.0, 15.0)
+		particles.append(p)
+
+func emit_heal(x: float, y: float, count: int = 6):
+	"""Upward floating green sparkles."""
+	_enforce_limit(count)
+	for i in range(count):
+		var col = Color8(80, 255, 120).lerp(Color8(150, 255, 200), randf())
+		var p = Particle.new(x + randf_range(-15, 15), y + randf_range(-5, 5),
+			randf_range(-15, 15), randf_range(-60, -30), col, 0.7, 3)
+		p.gravity_mult = -0.3
+		p.shape = Particle.Shape.SQUARE if randf() < 0.3 else Particle.Shape.CIRCLE
+		particles.append(p)
+
 func _enforce_limit(incoming: int):
 	if particles.size() + incoming <= MAX_PARTICLES:
 		return

@@ -54,7 +54,7 @@ func _check_player_melee_hits():
 			# Side-view: restrict to front-facing cone (±0.5 rad); top-down: use full arc
 			var arc_half = 0.5 if _is_sideview(game) else effective_arc / 2.0
 			if angle_diff < arc_half:
-				var dmg = int(p.melee_damage * dmg_mult)
+				var dmg = int(p.melee_damage * dmg_mult * p.temp_damage_mult)
 				var is_crit = randf() < p.crit_chance
 				if is_crit:
 					dmg *= 2

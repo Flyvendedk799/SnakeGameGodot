@@ -29,6 +29,66 @@ var lifesteal: int = 0
 var regen_rate: float = 0.0  # HP per second
 var regen_accum: float = 0.0
 var enemy_gold_mult: float = 1.0
+var key_count: int = 0
+
+# Temporary buffs (checkpoint shop consumables)
+var temp_damage_mult: float = 1.0
+var temp_damage_timer: float = 0.0
+var temp_speed_mult: float = 1.0
+var temp_speed_timer: float = 0.0
+var has_extra_life: bool = false
+
+# Skins / Cosmetics
+var selected_skin: String = "default"
+const SKIN_TINTS = {
+	"default": Color(1, 1, 1),
+	"golden": Color(1.0, 0.85, 0.3),
+	"shadow": Color(0.3, 0.2, 0.4),
+	"frost": Color(0.6, 0.85, 1.0),
+	"fire": Color(1.0, 0.5, 0.2),
+	"neon": Color(0.3, 1.0, 0.5),
+	"royal": Color(0.6, 0.3, 0.9),
+	"chrome": Color(0.85, 0.85, 0.9),
+}
+
+# Melee attack phases (anticipation / strike / recovery)
+var melee_attack_phase: String = "none"
+var melee_phase_timer: float = 0.0
+const ANTICIPATION_DURATION: float = 0.06
+const RECOVERY_DURATION: float = 0.08
+
+# Side-view physics (Main Game beat-em-up mode)
+var in_sideview_mode: bool = false
+var velocity: Vector2 = Vector2.ZERO
+var is_on_ground: bool = false
+var was_on_ground: bool = false
+var drop_through_timer: float = 0.0
+var coyote_timer: float = 0.0
+var jump_buffer_timer: float = 0.0
+const GRAVITY = 900.0
+const JUMP_FORCE = -380.0
+const DROP_THROUGH_DURATION = 0.2
+const COYOTE_TIME: float = 0.1
+const JUMP_BUFFER_TIME: float = 0.15
+const AIR_CONTROL_MULT: float = 0.85
+
+# Double jump
+var air_jump_count: int = 0
+var max_air_jumps: int = 1
+var has_double_jump: bool = true
+
+# Air dash
+var has_air_dash: bool = true
+var air_dash_used: bool = false
+
+# Wall jump / wall slide
+var has_wall_jump: bool = true
+var is_wall_sliding: bool = false
+var wall_slide_dir: int = 0
+const WALL_SLIDE_SPEED: float = 60.0
+const WALL_JUMP_FORCE_X: float = 250.0
+const WALL_JUMP_FORCE_Y: float = -350.0
+var wall_jump_lockout: float = 0.0
 var xp_mult: float = 1.0
 var proj_speed_mult: float = 1.0
 var has_grenades: bool = false
@@ -174,6 +234,10 @@ var squash_factor: float = 1.0
 var squash_velocity: float = 0.0
 var trail_history: Array = []
 var trail_timer: float = 0.0
+var impact_rings: Array = []  # {offset, radius, color, width, timer, max_timer}
+var melee_slash_trails: Array = []  # {offset, color, scale, timer}
+var landing_dust_timer: float = 0.0
+var wall_slide_sparks: Array = []
 
 func _ready():
 	if player_index == 1:
@@ -237,6 +301,17 @@ func buy_equipment(equip_id: String, game) -> bool:
 		gold_multiplier *= float(effects.gold_mult)
 	if effects.has("move_speed_mult"):
 		move_speed *= float(effects.move_speed_mult)
+	# Temporary buffs
+	if effects.has("temp_damage"):
+		temp_damage_mult = float(effects.temp_damage)
+		temp_damage_timer = float(effects.get("temp_duration", 30.0))
+	if effects.has("temp_speed"):
+		temp_speed_mult = float(effects.temp_speed)
+		temp_speed_timer = float(effects.get("temp_duration", 30.0))
+	if effects.has("extra_life"):
+		has_extra_life = true
+	if effects.has("grant_key"):
+		key_count += 1
 	# Register weapon config for weapon-type equipment
 	if not is_consumable:
 		owned_equipment.append(equip_id)
@@ -350,12 +425,16 @@ func use_potion(game):
 		game.spawn_damage_number(position, "HEALED!", Color8(100, 255, 100))
 
 func update_player(delta: float, game):
+	in_sideview_mode = _is_main_game_sideview(game)
 	if has_dino_mount:
 		dino_anim_time += delta
 	_handle_grapple(delta, game)
 	_handle_dash(delta, game)
 	_handle_block(delta, game)
-	_handle_movement(delta, game)
+	if in_sideview_mode:
+		_handle_movement_sideview(delta, game)
+	else:
+		_handle_movement(delta, game)
 	_handle_facing()
 	_handle_combat(delta, game)
 	_handle_grenade(delta, game)
@@ -373,6 +452,17 @@ func update_player(delta: float, game):
 			var heal_amt = int(regen_accum)
 			current_hp = mini(current_hp + heal_amt, max_hp)
 			regen_accum -= heal_amt
+	# Temp buff timers
+	if temp_damage_timer > 0:
+		temp_damage_timer -= delta
+		if temp_damage_timer <= 0:
+			temp_damage_mult = 1.0
+			temp_damage_timer = 0.0
+	if temp_speed_timer > 0:
+		temp_speed_timer -= delta
+		if temp_speed_timer <= 0:
+			temp_speed_mult = 1.0
+			temp_speed_timer = 0.0
 	queue_redraw()
 
 func _handle_grapple(delta, game):
@@ -536,7 +626,7 @@ func _handle_movement(delta, game):
 		walk_anim += delta * 10.0
 	# Sprint: hold to run faster
 	is_sprinting = is_moving and Input.is_action_pressed(action_prefix + "sprint") and not is_blocking and not is_attacking_melee
-	var effective_speed = move_speed
+	var effective_speed = move_speed * temp_speed_mult
 	if is_sprinting:
 		effective_speed *= SPRINT_SPEED_MULT
 	if has_dino_mount:
@@ -550,6 +640,165 @@ func _handle_movement(delta, game):
 	position.y = clampf(position.y, 15, world_h - 15)
 	# Collide with walls and intact barricades
 	position = game.map.resolve_collision(position, BODY_RADIUS)
+
+func _is_main_game_sideview(game) -> bool:
+	return game != null and game.map != null and game.map.has_method("resolve_sideview_collision")
+
+func _is_on_floor_only(pos: Vector2, game) -> bool:
+	# Check if standing on solid floor (not platform)
+	var foot_y = pos.y + BODY_RADIUS
+	for rect in game.map.floor_rects:
+		if absf(foot_y - rect.position.y) <= 6.0:
+			if pos.x + BODY_RADIUS >= rect.position.x and pos.x - BODY_RADIUS <= rect.position.x + rect.size.x:
+				return true
+	return false
+
+func _handle_movement_sideview(delta: float, game):
+	drop_through_timer = maxf(0, drop_through_timer - delta)
+	var want_drop_through = Input.is_action_pressed(action_prefix + "move_down")
+	if want_drop_through and is_on_ground:
+		var on_platform = game.map.get_ground_check(position, BODY_RADIUS) and not _is_on_floor_only(position, game)
+		if on_platform:
+			drop_through_timer = DROP_THROUGH_DURATION
+
+	var input_x = 0.0
+	if Input.is_action_pressed(action_prefix + "move_left"): input_x -= 1.0
+	if Input.is_action_pressed(action_prefix + "move_right"): input_x += 1.0
+	var want_jump = Input.is_action_just_pressed(action_prefix + "move_up")
+	is_moving = absf(input_x) > 0.1
+	if is_moving:
+		last_move_dir = Vector2(input_x, 0).normalized()
+		is_repairing = false
+		walk_anim += delta * 10.0
+
+	# Coyote time
+	if is_on_ground:
+		coyote_timer = COYOTE_TIME
+	else:
+		coyote_timer = maxf(0, coyote_timer - delta)
+	# Jump buffer
+	if want_jump and not is_on_ground:
+		jump_buffer_timer = JUMP_BUFFER_TIME
+	else:
+		jump_buffer_timer = maxf(0, jump_buffer_timer - delta)
+
+	is_sprinting = is_moving and Input.is_action_pressed(action_prefix + "sprint") and not is_blocking and not is_attacking_melee
+	var effective_speed = move_speed * temp_speed_mult
+	if is_sprinting:
+		effective_speed *= SPRINT_SPEED_MULT
+	if has_dino_mount:
+		effective_speed *= 1.40
+	if is_blocking:
+		effective_speed *= BLOCK_SPEED_PENALTY
+
+	# Air control
+	var control_mult = AIR_CONTROL_MULT if not is_on_ground else 1.0
+	var target_vx = input_x * effective_speed * control_mult
+	velocity.x = lerpf(velocity.x, target_vx, delta * 18.0)
+
+	# Wall jump lockout timer
+	if wall_jump_lockout > 0:
+		wall_jump_lockout -= delta
+
+	# Wall slide detection
+	is_wall_sliding = false
+	wall_slide_dir = 0
+	if has_wall_jump and not is_on_ground and velocity.y > 0 and game.map.has_method("get_wall_at_position"):
+		var wall_check_left = game.map.get_wall_at_position(position, BODY_RADIUS, -1)
+		var wall_check_right = game.map.get_wall_at_position(position, BODY_RADIUS, 1)
+		if wall_check_left and input_x < -0.1:
+			is_wall_sliding = true
+			wall_slide_dir = -1
+		elif wall_check_right and input_x > 0.1:
+			is_wall_sliding = true
+			wall_slide_dir = 1
+
+	# Jump: ground / coyote / double jump / wall jump
+	var can_jump = is_on_ground or coyote_timer > 0
+	if want_jump:
+		if is_wall_sliding:
+			velocity.x = -wall_slide_dir * WALL_JUMP_FORCE_X
+			velocity.y = WALL_JUMP_FORCE_Y
+			is_on_ground = false
+			is_wall_sliding = false
+			wall_jump_lockout = 0.15
+			coyote_timer = 0
+			air_jump_count = 0
+			squash_factor = 1.3
+			if game.sfx:
+				game.sfx.play_jump()
+			game.particles.emit_burst(position.x + wall_slide_dir * BODY_RADIUS, position.y, Color8(200, 200, 210), 6)
+		elif can_jump:
+			velocity.y = JUMP_FORCE
+			is_on_ground = false
+			coyote_timer = 0
+			air_jump_count = 0
+			squash_factor = 1.25
+			if game.sfx:
+				game.sfx.play_jump()
+		elif has_double_jump and air_jump_count < max_air_jumps:
+			velocity.y = JUMP_FORCE * 0.85
+			air_jump_count += 1
+			squash_factor = 1.2
+			if game.sfx:
+				game.sfx.play_jump()
+			game.particles.emit_ring(position.x, position.y + BODY_RADIUS, Color8(180, 220, 255), 8)
+
+	# Gravity
+	if is_wall_sliding:
+		velocity.y = minf(velocity.y, WALL_SLIDE_SPEED)
+		velocity.y += GRAVITY * 0.15 * delta
+	else:
+		velocity.y += GRAVITY * delta
+
+	# Jump apex squash
+	if not is_on_ground and velocity.y > -50 and velocity.y < 50:
+		squash_factor = 1.12
+
+	# Override horizontal during wall jump lockout
+	if wall_jump_lockout > 0:
+		pass
+
+	# Integrate
+	position += velocity * delta
+
+	# Collision
+	var ignore_platforms = drop_through_timer > 0
+	var result = game.map.resolve_sideview_collision(position, velocity, BODY_RADIUS, ignore_platforms)
+	position = result.position
+	velocity = result.velocity
+
+	# Ground check
+	was_on_ground = is_on_ground
+	is_on_ground = game.map.get_ground_check(position, BODY_RADIUS)
+
+	# Reset air abilities on ground touch
+	if is_on_ground and not was_on_ground:
+		air_jump_count = 0
+		air_dash_used = false
+
+	# Jump buffer on landing
+	if is_on_ground and not was_on_ground and jump_buffer_timer > 0:
+		velocity.y = JUMP_FORCE
+		is_on_ground = false
+		jump_buffer_timer = 0
+		squash_factor = 1.25
+		if game.sfx:
+			game.sfx.play_jump()
+
+	# Landing effects
+	if is_on_ground and not was_on_ground and velocity.y > 50:
+		squash_factor = 0.7
+		var impact_strength = clampf(velocity.y / 400.0, 0.3, 1.0)
+		spawn_impact_ring(Vector2(0, 22), 40.0 * impact_strength, Color(0.8, 0.75, 0.6, 0.6), 2.0)
+		if impact_strength > 0.6 and game.has_method("trigger_landing_impact"):
+			game.trigger_landing_impact()
+		if game.sfx:
+			game.sfx.play_land()
+		if game.particles:
+			var dust_count = int(12 * impact_strength) + 4
+			var dust_color = Color8(160, 150, 135)
+			game.particles.emit_directional(position.x, position.y + BODY_RADIUS, Vector2.UP, dust_color, dust_count)
 
 func _handle_facing():
 	# Right stick aiming (controller)
@@ -739,8 +988,11 @@ func _do_melee_attack(game):
 	melee_timer = melee_cooldown_base * attack_cooldown_multiplier * (0.7 + combo_index * 0.15)
 	is_attacking_melee = true
 	melee_hit_done = false
-	melee_attack_timer = cfg.duration
-	squash_factor = cfg.squash
+	melee_attack_timer = cfg.duration + ANTICIPATION_DURATION + RECOVERY_DURATION
+	# Start in anticipation phase
+	melee_attack_phase = "anticipation"
+	melee_phase_timer = ANTICIPATION_DURATION
+	squash_factor = 0.85  # Pull-back
 	if game.sfx:
 		game.sfx.play_combo_hit(combo_index)
 	# Advance combo
@@ -752,7 +1004,7 @@ func _do_ranged_attack(game):
 	var proj = ProjectileEntity.new()
 	proj.position = position
 	proj.direction = Vector2.from_angle(facing_angle)
-	proj.damage = int(ranged_damage * _get_current_ranged_damage_mult())
+	proj.damage = int(ranged_damage * _get_current_ranged_damage_mult() * temp_damage_mult)
 	proj.source = "player"
 	proj.owner_player = self
 	proj.proj_speed = 450.0 * proj_speed_mult
@@ -826,6 +1078,9 @@ func _handle_dash(delta, game):
 		return
 
 	if Input.is_action_just_pressed(action_prefix + "dash") and dash_cooldown <= 0 and not is_dead and not is_blocking:
+		# Air dash check: if airborne, must have ability and not already used
+		if not is_on_ground and in_sideview_mode and (not has_air_dash or air_dash_used):
+			return
 		# Dash in movement direction, or facing direction if standing still
 		var input_dir = Vector2.ZERO
 		if Input.is_action_pressed(action_prefix + "move_up"): input_dir.y -= 1
@@ -841,6 +1096,10 @@ func _handle_dash(delta, game):
 		dash_cooldown = DASH_COOLDOWN_TIME
 		invincibility_timer = DASH_DURATION + 0.05  # Invincible during dash
 		squash_factor = 1.5  # Stretch in dash direction
+		# Mark air dash used if airborne
+		if not is_on_ground and in_sideview_mode:
+			air_dash_used = true
+			velocity.y = 0  # Cancel vertical momentum
 		is_repairing = false
 		# Dash particles
 		if game:
@@ -900,17 +1159,50 @@ func _update_dash_trail(delta: float):
 func _update_timers(delta):
 	if is_attacking_melee:
 		melee_attack_timer -= delta
+		# Melee attack phases
+		if melee_attack_phase == "anticipation":
+			melee_phase_timer -= delta
+			squash_factor = lerpf(squash_factor, 0.85, delta * 20.0)
+			if melee_phase_timer <= 0:
+				melee_attack_phase = "strike"
+				melee_phase_timer = melee_attack_timer  # Remaining time is strike
+				squash_factor = 1.3
+		elif melee_attack_phase == "strike":
+			melee_phase_timer -= delta
+			if melee_phase_timer <= 0 or melee_attack_timer <= RECOVERY_DURATION:
+				melee_attack_phase = "recovery"
+				melee_phase_timer = RECOVERY_DURATION
+		elif melee_attack_phase == "recovery":
+			melee_phase_timer -= delta
+			squash_factor = lerpf(squash_factor, 1.0, delta * 15.0)
 		if melee_attack_timer <= 0:
 			is_attacking_melee = false
+			melee_attack_phase = "none"
+			melee_phase_timer = 0.0
 	invincibility_timer = maxf(0, invincibility_timer - delta)
 	hit_flash_timer = maxf(0, hit_flash_timer - delta)
+	# Parry window decay
+	if parry_window_timer > 0:
+		parry_window_timer -= delta
+		if parry_window_timer <= 0:
+			parry_window_timer = 0.0
+	# Parry counter execution
+	if parry_counter_active:
+		parry_counter_timer -= delta
+		if parry_counter_timer <= 0:
+			parry_counter_active = false
+			parry_counter_timer = 0.0
 
-func take_damage(amount: int, game):
+func take_damage(amount: int, game, attacker = null):
 	if invincibility_timer > 0 or is_dead:
 		return
 	if dodge_chance > 0 and randf() < dodge_chance:
 		game.spawn_damage_number(position, "DODGE", Color8(200, 200, 200))
 		invincibility_timer = 0.15
+		return
+	# Parry check: block within PARRY_WINDOW triggers counter
+	if is_blocking and parry_window_timer > 0 and attacker and is_instance_valid(attacker):
+		_trigger_parry(game, attacker)
 		return
 	# Block damage reduction
 	if is_blocking:
@@ -918,7 +1210,6 @@ func take_damage(amount: int, game):
 		var reduction = BLOCK_PERFECT_REDUCTION if is_perfect else BLOCK_DAMAGE_REDUCTION
 		amount = maxi(1, int(amount * (1.0 - reduction)))
 		if is_perfect:
-			# Perfect block: hitstop, flash, special feedback
 			block_flash_timer = 0.3
 			game.start_hitstop(0.08)
 			game.spawn_damage_number(position, "PERFECT!", Color8(100, 200, 255))
@@ -936,24 +1227,98 @@ func take_damage(amount: int, game):
 			squash_factor = 0.9
 		current_hp -= amount
 		if current_hp <= 0:
-			current_hp = 0
-			is_dead = true
-			visible = false
-			game.check_all_players_dead()
+			if has_extra_life:
+				has_extra_life = false
+				current_hp = int(max_hp * 0.5)
+				invincibility_timer = 1.5
+				squash_factor = 1.6
+				game.spawn_damage_number(position, "SECOND WIND!", Color8(100, 255, 200))
+				game.particles.emit_burst(position.x, position.y, Color8(100, 255, 200), 12)
+				if game.sfx:
+					game.sfx.play_wave_complete()
+			else:
+				current_hp = 0
+				is_dead = true
+				visible = false
+				game.check_all_players_dead()
 		return
 	current_hp -= amount
 	hit_flash_timer = 0.12
 	invincibility_timer = 0.35
-	squash_factor = 0.6  # Trigger squash spring on hit
+	squash_factor = 0.6
+	spawn_impact_ring(Vector2.ZERO, 45.0, Color(1, 0.3, 0.2, 0.7), 3.0)
 	if game.sfx:
 		game.sfx.play_player_hurt()
 	game.start_shake(6.0, 0.15)
-	game.start_chromatic(3.0)
+	game.start_chromatic(0.6)
+	if game.has_method("start_damage_flash"):
+		game.start_damage_flash()
 	if current_hp <= 0:
+		if has_extra_life:
+			has_extra_life = false
+			current_hp = int(max_hp * 0.5)
+			invincibility_timer = 1.5
+			squash_factor = 1.6
+			game.spawn_damage_number(position, "SECOND WIND!", Color8(100, 255, 200))
+			game.particles.emit_burst(position.x, position.y, Color8(100, 255, 200), 12)
+			if game.sfx:
+				game.sfx.play_wave_complete()
+			return
 		current_hp = 0
 		is_dead = true
 		visible = false
 		game.check_all_players_dead()
+
+func _trigger_parry(game, attacker):
+	parry_counter_active = true
+	parry_counter_timer = PARRY_COUNTER_DURATION
+	parry_target = attacker
+	invincibility_timer = PARRY_INVINCIBILITY
+	parry_window_timer = 0.0
+	squash_factor = 0.7
+	block_flash_timer = 0.4
+	game.start_hitstop(0.12)
+	game.start_shake(8.0, 0.2)
+	game.start_chromatic(0.8)
+	game.spawn_damage_number(position, "PARRY!", Color8(255, 215, 0), true)
+	game.particles.emit_burst(position.x, position.y, Color8(255, 215, 0), 15)
+	spawn_impact_ring(Vector2.ZERO, 60.0, Color(1.0, 0.85, 0.0, 0.8), 4.0)
+	if game.sfx:
+		game.sfx.play_block_perfect()
+
+func _execute_parry_counter(game):
+	if parry_target and is_instance_valid(parry_target) and parry_target.has_method("take_damage"):
+		var counter_dmg = int(melee_damage * PARRY_COUNTER_DAMAGE_MULT)
+		parry_target.take_damage(counter_dmg, game)
+		game.spawn_damage_number(parry_target.position, str(counter_dmg), Color8(255, 215, 0), true)
+		game.particles.emit_burst(parry_target.position.x, parry_target.position.y, Color8(255, 200, 50), 12)
+		spawn_melee_slash(Vector2.ZERO, Color(1.0, 0.85, 0.0, 0.9), 2.0)
+		game.start_shake(5.0, 0.12)
+		if game.sfx:
+			game.sfx.play_combo_hit(2)
+	parry_counter_active = false
+	parry_target = null
+
+func try_execute_enemy(enemy, game) -> bool:
+	if enemy.current_hp <= 0 or enemy.state == enemy.EnemyState.DYING or enemy.state == enemy.EnemyState.DEAD:
+		return false
+	var hp_pct = float(enemy.current_hp) / float(enemy.max_hp) if enemy.max_hp > 0 else 1.0
+	if hp_pct > 0.15:
+		return false
+	game.start_hitstop(0.15)
+	game.start_shake(10.0, 0.25)
+	game.start_chromatic(1.0)
+	game.spawn_damage_number(enemy.position, "EXECUTE!", Color8(255, 50, 50), true)
+	game.particles.emit_burst(enemy.position.x, enemy.position.y, Color8(255, 50, 50), 20)
+	spawn_impact_ring(enemy.position - position, 80.0, Color(1, 0.2, 0.1, 0.9), 5.0)
+	if game.sfx:
+		game.sfx.play_enemy_death()
+	enemy.die(game, true)
+	var bonus = 5
+	if game.economy:
+		game.economy.add_gold(bonus, player_index)
+		game.spawn_damage_number(enemy.position + Vector2(0, -20), "+%d BONUS" % bonus, Color.GOLD)
+	return true
 
 func heal(amount: int):
 	current_hp = mini(current_hp + amount, max_hp)
@@ -1031,6 +1396,34 @@ func _update_trail(delta: float):
 		if trail_history[i].alpha <= 0.0:
 			trail_history.remove_at(i)
 		i -= 1
+	# Update impact rings
+	i = impact_rings.size() - 1
+	while i >= 0:
+		impact_rings[i].timer -= delta
+		if impact_rings[i].timer <= 0:
+			impact_rings.remove_at(i)
+		i -= 1
+	# Update slash trails
+	i = melee_slash_trails.size() - 1
+	while i >= 0:
+		melee_slash_trails[i].timer -= delta
+		if melee_slash_trails[i].timer <= 0:
+			melee_slash_trails.remove_at(i)
+		i -= 1
+	# Landing dust
+	if landing_dust_timer > 0:
+		landing_dust_timer -= delta
+
+func spawn_impact_ring(offset: Vector2, radius: float, color: Color, width: float):
+	impact_rings.append({
+		"offset": offset, "radius": radius, "color": color,
+		"width": width, "timer": 0.3, "max_timer": 0.3
+	})
+
+func spawn_melee_slash(offset: Vector2, color: Color, scale: float = 1.0):
+	melee_slash_trails.append({
+		"offset": offset, "color": color, "scale": scale, "timer": 0.2
+	})
 
 # --- Drawing (Brotato-style enhanced) ---
 
@@ -1472,6 +1865,33 @@ func _draw():
 	if block_stamina < BLOCK_MAX_STAMINA or block_cooldown > 0:
 		var block_col = Color8(100, 200, 255, 150) if block_cooldown <= 0 else Color8(120, 100, 80, 100)
 		draw_string(font, Vector2(-22, 64), "BLOCK", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, block_col)
+
+	# Draw impact rings
+	for ring in impact_rings:
+		var t = ring.timer / ring.max_timer
+		var expand = ring.radius * (1.0 + (1.0 - t) * 0.5)
+		var alpha = t * ring.color.a
+		draw_arc(ring.offset, expand, 0, TAU, 32, Color(ring.color.r, ring.color.g, ring.color.b, alpha), ring.width * t)
+
+	# Draw melee slash trails
+	for slash in melee_slash_trails:
+		var t = slash.timer / 0.2
+		var alpha = t * slash.color.a
+		var r = 30.0 * slash.scale * (1.0 + (1.0 - t) * 0.3)
+		var col = Color(slash.color.r, slash.color.g, slash.color.b, alpha)
+		draw_arc(slash.offset, r, -0.5, 0.5, 12, col, 3.0 * slash.scale * t)
+
+	# Wall slide sparks
+	if is_wall_sliding:
+		var spark_x = wall_slide_dir * BODY_RADIUS
+		for si in range(3):
+			var sy = randf_range(-10, 10)
+			draw_circle(Vector2(spark_x, sy), randf_range(1.0, 2.5), Color(1.0, 0.8, 0.3, randf_range(0.3, 0.7)))
+
+	# Parry counter flash
+	if parry_counter_active:
+		var counter_t = parry_counter_timer / PARRY_COUNTER_DURATION
+		draw_circle(Vector2.ZERO, 35.0 * (1.0 - counter_t), Color(1.0, 0.85, 0.0, counter_t * 0.4))
 
 func _draw_grenade_aim_trajectory():
 	"""Draw a parabolic arc preview showing where the grenade will land."""
