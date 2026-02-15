@@ -23,7 +23,7 @@ func show_menu(victory: bool = false):
 	hover_index = -1
 	kb_index = 0
 	var is_main_game = game != null and game.get("world_select") == null
-	options = (["Level Select", "Quit to Launcher"] if is_main_game else ["World Select", "Quit to Launcher"]) if victory else ["Try Again", "Quit to Launcher"]
+	options = (["World Map", "Quit to Launcher"] if is_main_game else ["World Select", "Quit to Launcher"]) if victory else ["Try Again", "Quit to Launcher"]
 	fade_alpha = 0.0
 
 func hide_menu():
@@ -80,7 +80,7 @@ func _select_option(index: int):
 					game.world_select.show_select()
 					game._update_visibility()
 				else:
-					get_tree().change_scene_to_file("res://main_game/ui/level_select.tscn")
+					get_tree().change_scene_to_file("res://main_game/ui/world_map.tscn")
 			else:
 				hide_menu()
 				game.restart_game()
@@ -131,10 +131,13 @@ func _draw():
 	var stats_y = 280.0
 	if is_victory:
 		stats_y = 240.0
+	var wave = game.current_wave if "current_wave" in game else 0
+	var killed = game.enemies_killed_total if "enemies_killed_total" in game else 0
+	var gold = game.total_gold_earned if "total_gold_earned" in game else 0
 	var stat_lines = [
-		"Wave Reached: %d" % game.current_wave,
-		"Karens Defeated: %d" % game.enemies_killed_total,
-		"Gold Earned: %d" % game.total_gold_earned,
+		"Wave Reached: %d" % wave,
+		"Karens Defeated: %d" % killed,
+		"Gold Earned: %d" % gold,
 		("Level: %d" % game.progression.get_level(0)) if not game.p2_joined else ("P1 Lv.%d  P2 Lv.%d" % [game.progression.get_level(0), game.progression.get_level(1)]),
 		"Time Survived: %d:%02d" % [int(game.time_elapsed) / 60, int(game.time_elapsed) % 60],
 	]
@@ -148,7 +151,7 @@ func _draw():
 		"The Karens win this round...",
 		"Duuude... that was gnarly.",
 	]
-	var flavor = flavor_texts[game.current_wave % flavor_texts.size()]
+	var flavor = flavor_texts[wave % flavor_texts.size()]
 	draw_string(font, Vector2(390, 390), flavor, HORIZONTAL_ALIGNMENT_CENTER, 500, 12, Color(0.7, 0.7, 0.5, alpha))
 
 	# Buttons

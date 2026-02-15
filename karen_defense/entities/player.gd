@@ -2,6 +2,7 @@ class_name PlayerEntity
 extends Node2D
 
 # Multiplayer config
+var game = null  # Reference to main game node
 var action_prefix: String = ""  # "" for P1, "p2_" for P2
 var player_index: int = 0       # 0=P1, 1=P2
 var is_dead: bool = false
@@ -139,6 +140,16 @@ const BLOCK_PERFECT_WINDOW = 0.15  # First 0.15s = perfect block
 const BLOCK_PERFECT_REDUCTION = 0.9  # 90% reduction on perfect block
 const BLOCK_SPEED_PENALTY = 0.6  # 60% of normal speed while blocking
 var block_flash_timer: float = 0.0  # Visual flash on perfect block
+
+# Parry / Counter system
+var parry_window_timer: float = 0.0
+var parry_counter_active: bool = false
+var parry_counter_timer: float = 0.0
+var parry_target: Node2D = null
+const PARRY_WINDOW: float = 0.1
+const PARRY_COUNTER_DURATION: float = 0.25
+const PARRY_COUNTER_DAMAGE_MULT: float = 3.0
+const PARRY_INVINCIBILITY: float = 0.4
 
 # Sprint state
 var is_sprinting: bool = false
@@ -521,6 +532,11 @@ func _find_grapple_target(game) -> Vector2:
 	var aim_dir = Vector2.from_angle(facing_angle)
 	var candidates: Array = []
 
+	# Grapple anchors (LinearMap - explicit grapple points)
+	if "grapple_anchors" in game.map and game.map.grapple_anchors.size() > 0:
+		for anchor in game.map.grapple_anchors:
+			candidates.append(anchor)
+
 	# Barricades
 	for b in game.map.barricades:
 		candidates.append(b.position)
@@ -584,6 +600,7 @@ func _handle_block(delta, game):
 			# Just started blocking
 			is_blocking = true
 			block_hold_time = 0.0
+			parry_window_timer = PARRY_WINDOW
 			is_repairing = false
 		block_hold_time += delta
 		block_stamina -= delta
@@ -592,10 +609,12 @@ func _handle_block(delta, game):
 			is_blocking = false
 			block_cooldown = BLOCK_COOLDOWN_TIME
 			block_hold_time = 0.0
+			parry_window_timer = 0.0
 	else:
 		if is_blocking:
 			is_blocking = false
 			block_hold_time = 0.0
+			parry_window_timer = 0.0
 
 func _handle_movement(delta, game):
 	# During grapple/dash, movement is handled elsewhere
@@ -642,7 +661,11 @@ func _handle_movement(delta, game):
 	position = game.map.resolve_collision(position, BODY_RADIUS)
 
 func _is_main_game_sideview(game) -> bool:
-	return game != null and game.map != null and game.map.has_method("resolve_sideview_collision")
+	if game == null or game.map == null:
+		return false
+	if game.get("is_sideview_game") == true:
+		return true
+	return game.map.has_method("resolve_sideview_collision")
 
 func _is_on_floor_only(pos: Vector2, game) -> bool:
 	# Check if standing on solid floor (not platform)
@@ -654,6 +677,16 @@ func _is_on_floor_only(pos: Vector2, game) -> bool:
 	return false
 
 func _handle_movement_sideview(delta: float, game):
+	# During dash, apply dash movement and skip normal physics
+	if is_dashing:
+		position += dash_direction * DASH_SPEED * delta
+		if dash_trail.size() == 0 or position.distance_to(dash_trail[-1].pos) > 8.0:
+			dash_trail.append({"pos": position, "alpha": 0.5, "angle": facing_angle})
+		# Clamp to map bounds during dash
+		position.x = clampf(position.x, 30, game.map.level_width - 30)
+		position.y = clampf(position.y, 30, game.map.level_height - 30)
+		return
+
 	drop_through_timer = maxf(0, drop_through_timer - delta)
 	var want_drop_through = Input.is_action_pressed(action_prefix + "move_down")
 	if want_drop_through and is_on_ground:
@@ -1463,18 +1496,32 @@ func _draw():
 			var line_alpha = 0.2 + 0.15 * sin(walk_anim + si * 1.5)
 			draw_line(line_start, line_end, Color(1.0, 1.0, 1.0, line_alpha), 1.5)
 
-	# Enhanced shadow (bigger, more offset, pulsing with movement)
+	# Enhanced shadow with depth-based scaling and directional offset
 	var shadow_pulse = 1.0
 	if is_dashing:
 		shadow_pulse = 1.3
 	elif is_moving:
 		shadow_pulse = 1.0 + abs(sin(walk_anim)) * 0.12
-	var shadow_w = 90.0 * shadow_pulse
-	var shadow_h = 24.0 * shadow_pulse
+
+	# Apply depth scaling to shadow
+	var shadow_depth_scale = 1.0
+	var shadow_offset_x = 0.0
+	var shadow_offset_y = 26.0
+	var shadow_alpha = 0.4
+	if in_sideview_mode and game:
+		shadow_depth_scale = DepthPlanes.get_scale_for_y(position.y)
+		# Directional shadow: offset more for entities farther from camera
+		var y_factor = (position.y - 280.0) / 300.0
+		shadow_offset_x = y_factor * 6.0  # Shadow shifts right/left based on depth
+		shadow_offset_y = 26.0 + abs(y_factor) * 4.0  # Shadow moves down slightly
+		shadow_alpha = clampf(0.35 + y_factor * 0.1, 0.25, 0.45)  # Fade far shadows
+
+	var shadow_w = 90.0 * shadow_pulse * shadow_depth_scale
+	var shadow_h = 24.0 * shadow_pulse * shadow_depth_scale
 	if has_dino_mount:
 		shadow_w *= 1.4
 		shadow_h *= 1.3
-	_draw_shadow_ellipse(Rect2(-shadow_w / 2, 26, shadow_w, shadow_h), Color(0, 0, 0, 0.4))
+	_draw_shadow_ellipse(Rect2(-shadow_w / 2 + shadow_offset_x, shadow_offset_y, shadow_w, shadow_h), Color(0, 0, 0, shadow_alpha))
 
 	# Flip based on facing direction
 	var flip = facing_angle < -PI / 2.0 or facing_angle > PI / 2.0
@@ -1550,6 +1597,15 @@ func _draw():
 			var breath = sin(idle_time * 2.0)
 			scale_y = base_scale * (1.0 + breath * 0.04)
 			scale_x = base_scale * (1.0 - breath * 0.025)
+
+		# Apply perspective depth scaling (makes entities smaller when higher on screen)
+		if in_sideview_mode and game:
+			var depth_scale = DepthPlanes.get_scale_for_y(position.y)
+			# Add slight vertical squash to simulate perspective foreshortening
+			var y_factor = clampf((position.y - 280.0) / 300.0, -0.3, 0.3)  # 280 is middle ground
+			var perspective_squash = 1.0 - abs(y_factor) * 0.08  # Subtle vertical compression
+			scale_x *= depth_scale
+			scale_y *= depth_scale * perspective_squash
 
 		# Apply spring squash factor
 		scale_y *= squash_factor
@@ -2121,9 +2177,25 @@ func _draw_oval(center: Vector2, w: float, h: float, rot: float, col: Color):
 	draw_colored_polygon(pts, col)
 
 func _draw_shadow_ellipse(rect: Rect2, color: Color):
+	"""Enhanced shadow with dual-layer gradient falloff (optimized)."""
 	var center = rect.position + rect.size / 2
-	var points = PackedVector2Array()
-	for i in range(16):
-		var angle = TAU * i / 16.0
-		points.append(center + Vector2(cos(angle) * rect.size.x / 2, sin(angle) * rect.size.y / 2))
-	draw_colored_polygon(points, color)
+
+	# Layer 1: Outer soft shadow (ambient shadow)
+	var outer_points = PackedVector2Array()
+	for i in range(12):  # Reduced from 20 to 12 for performance
+		var angle = TAU * i / 12.0
+		outer_points.append(center + Vector2(
+			cos(angle) * rect.size.x * 0.6,
+			sin(angle) * rect.size.y * 0.6
+		))
+	draw_colored_polygon(outer_points, Color(color.r, color.g, color.b, color.a * 0.25))
+
+	# Layer 2: Inner contact shadow (darker, sharper)
+	var inner_points = PackedVector2Array()
+	for i in range(12):  # Reduced from 16 to 12
+		var angle = TAU * i / 12.0
+		inner_points.append(center + Vector2(
+			cos(angle) * rect.size.x * 0.4,
+			sin(angle) * rect.size.y * 0.4
+		))
+	draw_colored_polygon(inner_points, color)

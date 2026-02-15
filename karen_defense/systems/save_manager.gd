@@ -73,10 +73,14 @@ static func save_main_game_progress(progress: Dictionary) -> bool:
 	return true
 
 static func is_level_unlocked(level_id: int, progress: Dictionary) -> bool:
-	if level_id == 1:
+	if level_id <= 1:
 		return true
-	var completed = progress.get("levels_completed", [])
-	return (level_id - 1) in completed
+	var completed: Array = progress.get("levels_completed", [])
+	var prev_id = level_id - 1
+	for v in completed:
+		if int(v) == prev_id:
+			return true
+	return false
 
 static func complete_level(level_id: int, progress: Dictionary, stars: int = 1) -> bool:
 	var completed: Array = progress.get("levels_completed", [])
@@ -88,3 +92,57 @@ static func complete_level(level_id: int, progress: Dictionary, stars: int = 1) 
 	stars_dict[level_id] = maxi(stars_dict.get(level_id, 0), stars)
 	progress["level_stars"] = stars_dict
 	return save_main_game_progress(progress)
+
+# --- Main Game upgrades (souls, HP, speed, potions) ---
+const UPGRADES_SAVE_PATH = "user://main_game_upgrades.save"
+
+static func load_upgrades() -> Dictionary:
+	var result = {"souls": 0, "hp_level": 0, "speed_level": 0, "potions": 1, "achievements": []}
+	if not FileAccess.file_exists(UPGRADES_SAVE_PATH):
+		return result
+	var file = FileAccess.open(UPGRADES_SAVE_PATH, FileAccess.READ)
+	if not file:
+		return result
+	var json = JSON.new()
+	var err = json.parse(file.get_as_text())
+	file.close()
+	if err != OK:
+		return result
+	var data = json.get_data()
+	if data is Dictionary:
+		for k in result:
+			if data.has(k):
+				result[k] = data[k]
+	return result
+
+static func save_upgrades(upgrades: Dictionary) -> bool:
+	var json_str = JSON.stringify(upgrades)
+	var file = FileAccess.open(UPGRADES_SAVE_PATH, FileAccess.WRITE)
+	if not file:
+		return false
+	file.store_string(json_str)
+	file.close()
+	return true
+
+static func buy_upgrade(type: String, upgrades: Dictionary) -> bool:
+	var key = type + "_level"
+	if type == "potions":
+		key = "potions"
+	var current = int(upgrades.get(key, 0))
+	var cost = get_upgrade_cost(type, current)
+	var souls = int(upgrades.get("souls", 0))
+	if souls < cost:
+		return false
+	var max_lvl = get_max_upgrade_level(type)
+	if current >= max_lvl:
+		return false
+	upgrades["souls"] = souls - cost
+	upgrades[key] = current + 1
+	return save_upgrades(upgrades)
+
+static func get_max_upgrade_level(_type: String) -> int:
+	return 3
+
+static func get_upgrade_cost(type: String, current: int) -> int:
+	var base = 10 if type == "potions" else 25
+	return base + current * 15

@@ -8,6 +8,7 @@ var state: GameState = GameState.LEVEL_ACTIVE
 var previous_state: GameState = GameState.LEVEL_ACTIVE
 
 var map: LinearMap
+var parallax_backdrop: ParallaxBackdrop = null
 var player_node: PlayerEntity
 var ally_container: Node2D
 var enemy_container: Node2D
@@ -25,6 +26,7 @@ var building_manager: BuildingManager
 var unit_manager: UnitManager
 
 var hud: HudDisplay
+var fx_draw_node: FXDrawNode = null
 var shop_menu: ShopMenu
 var level_up_menu: LevelUpMenu
 var pause_menu: PauseMenu
@@ -34,6 +36,7 @@ var sfx: KarenSfxPlayer
 var particles: ParticleSystem
 var game_camera: Camera2D = null
 var camera_base_zoom: float = 1.0
+var camera_rotation_angle: float = 0.15  # ~8.6 degrees - subtle tilt for depth (was 0.35, too much)
 
 var player2_node: PlayerEntity = null
 var p2_joined: bool = false
@@ -47,14 +50,29 @@ var shake_duration: float = 0.0
 var shake_timer: float = 0.0
 var shake_offset: Vector2 = Vector2.ZERO
 var hitstop_timer: float = 0.0
+var radar_reveal_timer: float = 0.0  # HUD minimap compatibility (Karen Defense radar)
+var combo_meter: float = 0.0  # HUD combo display compatibility (Karen Defense)
+var combo_level: int = 0
+var combo_stats: Dictionary = {"mark_strike": 0, "supply_chain": 0, "emp_followup": 0}
 var _redraw_accum: float = 0.0
+
+# FX / post-process (player.gd, enemy.gd, boss_manager.gd, FXDrawNode)
+var chromatic_intensity: float = 0.0
+var damage_flash_timer: float = 0.0
+var damage_flash_color: Color = Color(1, 0.2, 0.2, 0.6)
+var vignette_intensity: float = 0.0
+var speed_line_intensity: float = 0.0
+var level_intro_timer: float = 2.0
 const REDRAW_INTERVAL: float = 1.0 / 60.0
 
 var current_level_id: int = 1
 var current_map_id: int = 1  # Alias for game_over_screen compatibility
+var is_sideview_game: bool = true  # Main Game uses front-view platformer movement
 var victory_display_timer: float = 0.0
 var current_wave: int = 0  # Stub for HUD compatibility
 var wave_announce_timer: float = 0.0
+var enemies_killed_total: int = 0  # game_over_screen, enemy.gd
+var total_gold_earned: int = 0  # game_over_screen
 var companion_session = null  # Stub for HUD (Main Game has no companion)
 var companion_action_feed: Array = []
 var helicopter_entity = null
@@ -72,6 +90,10 @@ func _build_scene_tree():
 	game_layer = Node2D.new()
 	game_layer.name = "GameLayer"
 	add_child(game_layer)
+
+	parallax_backdrop = ParallaxBackdrop.new()
+	parallax_backdrop.name = "ParallaxBackdrop"
+	game_layer.add_child(parallax_backdrop)
 
 	map = LinearMap.new()
 	map.name = "Map"
@@ -111,6 +133,15 @@ func _build_scene_tree():
 	game_camera.zoom = Vector2(camera_base_zoom, camera_base_zoom)
 	game_camera.enabled = true
 	game_layer.add_child(game_camera)
+
+	# Apply subtle perspective skew for depth effect (Y-shear creates isometric-like feel)
+	# Using transform instead of rotation to avoid physics issues
+	var skew_amount = 0.08  # Subtle skew for perspective
+	game_layer.transform = Transform2D(
+		Vector2(1.0, skew_amount),  # X basis with slight Y skew
+		Vector2(0.0, 1.0),           # Y basis unchanged
+		Vector2.ZERO                 # Origin
+	)
 
 	spawn_director = SpawnDirector.new()
 	spawn_director.name = "SpawnDirector"
@@ -169,10 +200,22 @@ func _build_scene_tree():
 	game_over_screen.name = "GameOverScreen"
 	ui_layer.add_child(game_over_screen)
 
-	add_child(particles)
+	var fx_layer = CanvasLayer.new()
+	fx_layer.name = "FXLayer"
+	fx_layer.layer = 15
+	add_child(fx_layer)
+	fx_draw_node = FXDrawNode.new()
+	fx_draw_node.name = "FXDraw"
+	fx_draw_node.game = self
+	fx_layer.add_child(fx_draw_node)
+
+	# ParticleSystem is RefCounted, not Node - used via particles.update() and particles.draw()
 
 func _setup_systems():
 	map.setup(self, current_level_id)
+	if parallax_backdrop:
+		var theme = map.level_config.get("theme", "grass")
+		parallax_backdrop.setup(self, theme, map.level_width, map.level_height)
 	economy.configure_for_map(map.level_config)
 	game_camera.position = map.get_player_anchor()
 	spawn_director.setup(self)
@@ -187,7 +230,8 @@ func _setup_systems():
 	pause_menu.setup(self)
 	game_over_screen.setup(self)
 
-	player_node.position = Vector2(80, 350)
+	# Spawn on first walkable floor (supports floor_segments and layers)
+	player_node.position = map.get_spawn_position()
 
 func _update_visibility():
 	game_layer.visible = state != GameState.GAME_OVER and state != GameState.VICTORY
@@ -225,9 +269,19 @@ func _process(delta):
 			return
 
 	_update_shake(delta)
+	if chromatic_intensity > 0.05:
+		chromatic_intensity = lerpf(chromatic_intensity, 0.0, delta * 8.0)
+	if level_intro_timer > 0:
+		level_intro_timer -= delta
+	if damage_flash_timer > 0:
+		damage_flash_timer -= delta
 	if state == GameState.LEVEL_ACTIVE:
 		_update_linear_camera(delta)
 	map.anim_time += delta
+	if map:
+		map.queue_redraw()
+	if fx_draw_node:
+		fx_draw_node.queue_redraw()
 	_update_visibility()
 	_redraw_accum += delta
 	if _redraw_accum >= REDRAW_INTERVAL:
@@ -284,6 +338,7 @@ func _process_level_active(delta):
 
 	checkpoint_manager.update(delta)
 	spawn_director.update(delta)
+	total_gold_earned = economy.p1_gold + economy.p2_gold
 
 	if map.is_in_goal(player_node.position) or (p2_joined and player2_node and map.is_in_goal(player2_node.position)):
 		_on_level_complete()
@@ -323,8 +378,9 @@ func _update_linear_camera(delta: float):
 		var lookahead_x = 150.0 if anchor.last_move_dir.x > 0.1 else -80.0
 		target = Vector2(anchor.position.x + lookahead_x, anchor.position.y)
 
+	# Allow vertical camera follow for platformer levels (was locking Y when dy < 90)
 	var dy = target.y - game_camera.position.y
-	if absf(dy) < 90:
+	if absf(dy) < 25:
 		target.y = game_camera.position.y
 
 	var half_w = (get_viewport_rect().size.x / 2.0) / maxf(zoom_target.x, 0.1)
@@ -388,6 +444,13 @@ func start_shake(intensity: float, duration: float):
 	shake_duration = duration
 	shake_timer = duration
 
+func trigger_landing_impact():
+	"""Called by player on hard landings - screen shake for juice."""
+	start_shake(5.0, 0.1)
+
+func start_chromatic(intensity: float):
+	chromatic_intensity = maxf(chromatic_intensity, intensity)
+
 func _update_shake(delta):
 	if shake_timer > 0:
 		shake_timer -= delta
@@ -420,7 +483,7 @@ func unpause():
 		sfx.play_pause()
 
 func _return_to_level_select():
-	get_tree().change_scene_to_file("res://main_game/ui/level_select.tscn")
+	get_tree().change_scene_to_file("res://main_game/ui/world_map.tscn")
 
 func _input(event):
 	if state == GameState.GAME_OVER or state == GameState.VICTORY:

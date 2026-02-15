@@ -37,7 +37,7 @@ func _generate_clouds():
 	cloud_data.clear()
 	var rng = RandomNumberGenerator.new()
 	rng.seed = hash(theme_name) + int(level_width)
-	var count = 8 + int(level_width / 400)
+	var count = 16 + int(level_width / 250)  # Denser clouds for richer atmosphere
 	for i in range(count):
 		cloud_data.append({
 			"x": rng.randf_range(-200, level_width + 200),
@@ -138,6 +138,9 @@ func _draw():
 			var cap_h = 12.0 + sin(i * 1.3) * 6
 			draw_rect(Rect2(bx + 10, by, 120, cap_h), Color(0.95, 0.97, 1.0, 0.5))
 
+	# Atmospheric depth fog layer 1 (after distant mountains - 40% fog intensity)
+	_draw_depth_fog(offset0, 0.40)
+
 	# Mid-ground hills (parallax ~0.5)
 	var offset2 = -cam_pos * 0.5
 	for i in range(int(level_width / 65) + 8):
@@ -151,17 +154,48 @@ func _draw():
 			draw_rect(Rect2(bx + 20, by - tree_h + 5, 38, 15), pal[4].darkened(0.1))
 			draw_rect(Rect2(bx + 25, by - tree_h - 5, 28, 12), pal[4].darkened(0.05))
 
-	# Near hills (parallax ~0.7)
-	var offset3 = -cam_pos * 0.7
-	for i in range(int(level_width / 45) + 10):
-		var bx = offset3.x + i * 45.0 + fmod(cam_pos.x * 0.1, 45)
-		var by = level_height - hill_h * (0.28 + 0.32 * sin(i * 0.4 + 2))
-		draw_rect(Rect2(bx, by, 65, hill_h + 25), pal[5])
+	# Atmospheric depth fog layer 2 (after mid-ground hills - 20% fog intensity)
+	_draw_depth_fog(offset0, 0.20)
 
-	# Foreground foliage/props (parallax ~0.9)
+	# Near hills (parallax ~0.7) - more density
+	var offset3 = -cam_pos * 0.7
+	for i in range(int(level_width / 35) + 14):
+		var bx = offset3.x + i * 35.0 + fmod(cam_pos.x * 0.1, 35)
+		var by = level_height - hill_h * (0.28 + 0.32 * sin(i * 0.4 + 2))
+		draw_rect(Rect2(bx, by, 55, hill_h + 25), pal[5])
+	# Sky theme: floating island silhouettes
+	if theme_name == "sky":
+		var offset_isl = -cam_pos * 0.5
+		for i in range(int(level_width / 400) + 4):
+			var ix = offset_isl.x + i * 380.0 + fmod(cam_pos.x * 0.04, 380)
+			var iy = level_height - 150.0 - 80.0 * sin(i * 1.2)
+			draw_rect(Rect2(ix, iy, 120, 120), pal[4].darkened(0.3))
+			draw_rect(Rect2(ix + 20, iy - 30, 80, 80), pal[5].darkened(0.2))
+
+	# Ceiling details (cave: stalactites; summit: icicles)
+	if theme_name == "cave":
+		var offset_ceil = -cam_pos * 0.85
+		for i in range(int(level_width / 60) + 8):
+			var cx = offset_ceil.x + i * 60.0 + fmod(cam_pos.x * 0.08, 60)
+			var drop = 20.0 + fmod(i * 4.7, 35.0)
+			draw_rect(Rect2(cx, -80, 6, drop), Color8(55, 50, 65))
+			draw_rect(Rect2(cx + 1, -78, 4, drop * 0.3), Color8(70, 65, 78))
+	elif theme_name == "summit" or theme_name == "ice":
+		var offset_ceil = -cam_pos * 0.85
+		for i in range(int(level_width / 80) + 6):
+			var cx = offset_ceil.x + i * 80.0 + fmod(cam_pos.x * 0.06, 80)
+			var drop = 12.0 + fmod(i * 3.1, 18.0)
+			draw_rect(Rect2(cx, -60, 4, drop), Color(0.9, 0.95, 1.0, 0.5))
+			draw_rect(Rect2(cx + 1, -58, 2, drop * 0.4), Color(1, 1, 1, 0.6))
+
+	# Atmospheric depth fog layer 3 (after near hills - 5% fog intensity)
+	_draw_depth_fog(offset0, 0.05)
+
+	# Foreground foliage/props (parallax ~0.9) - DENSER
 	var offset4 = -cam_pos * 0.9
-	for i in range(int(level_width / 100) + 5):
-		var fx = offset4.x + i * 100.0 + fmod(cam_pos.x * 0.15, 100)
+	var fg_count = int(level_width / 55) + 12
+	for i in range(fg_count):
+		var fx = offset4.x + i * 55.0 + fmod(cam_pos.x * 0.15, 55)
 		var fy = level_height - 40.0 - 25.0 * sin(i * 0.8)
 		match theme_name:
 			"grass":
@@ -239,3 +273,28 @@ func _draw_weather(cam_pos: Vector2):
 				var leaf_drift = sin(time * 2.0 + i * 1.2) * 12.0
 				var leaf_alpha = 0.15 + 0.1 * sin(time * 1.5 + i)
 				draw_rect(Rect2(lx + leaf_drift, ly, 4, 2), Color(0.4, 0.6, 0.2, leaf_alpha))
+
+func _draw_depth_fog(offset: Vector2, intensity: float):
+	"""Draw atmospheric depth fog with theme-appropriate color."""
+	# Get fog color based on theme
+	var fog_color: Color
+	match theme_name:
+		"cave":
+			fog_color = Color(0.08, 0.06, 0.12, 1.0)  # Dark purple haze
+		"lava":
+			fog_color = Color(0.25, 0.08, 0.04, 1.0)  # Dark red smoke
+		"sky":
+			fog_color = Color(0.85, 0.90, 1.0, 1.0)  # Bright blue-white
+		"summit", "ice":
+			fog_color = Color(0.92, 0.95, 1.0, 1.0)  # Cool white mist
+		_:  # grass and default
+			fog_color = Color(0.88, 0.92, 0.96, 1.0)  # Soft blue-white
+
+	# Draw fog as gradient bands across the screen
+	var band_count = 8
+	for i in range(band_count):
+		var t = float(i) / float(band_count)
+		var y = level_height * (0.3 + t * 0.5)
+		var alpha = intensity * (1.0 - t * 0.7)  # Stronger at horizon, fades toward bottom
+		var band_col = Color(fog_color.r, fog_color.g, fog_color.b, alpha * 0.15)
+		draw_rect(Rect2(offset.x - 500, y, level_width + 2000, level_height * 0.08), band_col)

@@ -71,7 +71,7 @@ func _get_button_rect(index: int) -> Rect2:
 func _launch_game(index: int):
 	match index:
 		0:
-			get_tree().change_scene_to_file("res://main_game/ui/level_select.tscn")
+			get_tree().change_scene_to_file("res://main_game/ui/world_map.tscn")
 		1:
 			get_tree().change_scene_to_file("res://karen_defense/karen_defense.tscn")
 		2:

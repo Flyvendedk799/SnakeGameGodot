@@ -526,6 +526,7 @@ func _draw_minimap():
 	if game == null or game.state == game.GameState.TITLE or game.state == game.GameState.WORLD_SELECT:
 		return
 	var map = game.map
+	var font = ThemeDB.fallback_font
 
 	# Minimap dimensions and position (bottom-left)
 	var mm_size = 160.0
@@ -668,7 +669,6 @@ func _draw_minimap():
 		draw_rect(Rect2(vx, vy, vw, vh), Color8(255, 255, 255, 40), false, 1.0)
 
 	# Label
-	var font = ThemeDB.fallback_font
 	draw_string(font, Vector2(mm_x, mm_y - 6), "MINIMAP", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color8(160, 150, 180, 200))
 
 	# Companion status badge (if companion mode enabled)

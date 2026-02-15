@@ -80,7 +80,7 @@ func _input_world_select(event):
 			if event.position.distance_to(wp) < 60 and _is_world_unlocked(i):
 				selected_world = i
 				mode = 1
-				selected_level_in_world = 0
+				selected_level_in_world = 0  # Reset to first level when entering world
 				return
 
 func _input_level_select(event):

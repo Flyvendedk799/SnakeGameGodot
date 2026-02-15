@@ -44,6 +44,8 @@ func _ready():
 	sounds["weapon_wheel_open"] = _generate_wav(500.0, 0.06, "sine", 700.0, 0.2)
 	sounds["weapon_wheel_select"] = _generate_wav(600.0, 0.04, "sine", 800.0, 0.2)
 	sounds["hammer_hit"] = _generate_wav(300.0, 0.08, "square", 200.0, 0.25)
+	sounds["jump"] = _generate_wav(450.0, 0.12, "sine", 600.0, 0.3)
+	sounds["land"] = _generate_wav(120.0, 0.08, "saw", 60.0, 0.25)
 
 func _generate_wav(frequency: float, duration: float, wave_type: String, freq_end: float = -1.0, volume: float = 0.5) -> AudioStreamWAV:
 	if freq_end < 0:
@@ -117,3 +119,5 @@ func play_charge_ready(): _play("charge_ready")
 func play_weapon_wheel_open(): _play("weapon_wheel_open")
 func play_weapon_wheel_select(): _play("weapon_wheel_select")
 func play_hammer_hit(): _play("hammer_hit")
+func play_jump(): _play("jump")
+func play_land(): _play("land")

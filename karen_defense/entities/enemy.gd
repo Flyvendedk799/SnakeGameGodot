@@ -31,6 +31,7 @@ var label_short: String = "CK"
 var sprite_texture: Texture2D = null
 
 # Runtime
+var game = null  # Reference to main game node
 var target_entrance: int = -1
 var attack_timer: float = 0.0
 var hit_flash_timer: float = 0.0
@@ -363,16 +364,28 @@ func _draw():
 	var s = entity_size
 	var kb = knockback_offset
 
-	# Enhanced shadow (bigger, more offset, pulsing with movement)
+	# Enhanced shadow with depth-based scaling and directional offset
 	var shadow_pulse = 1.0
 	if state == EnemyState.APPROACHING or state == EnemyState.CHASING:
 		shadow_pulse = 1.0 + abs(sin(anim_time * 8.0)) * 0.15
-	var shadow_w = s * 2.8 * shadow_pulse
-	var shadow_h = s * 1.0 * shadow_pulse
+
+	# Apply depth scaling to shadow
+	var shadow_depth_scale = 1.0
+	var shadow_offset_x = 0.0
+	var shadow_alpha = 0.38
+	if game and game.is_sideview_game:
+		shadow_depth_scale = DepthPlanes.get_scale_for_y(position.y)
+		# Directional shadow: offset based on depth
+		var y_factor = (position.y - 280.0) / 300.0
+		shadow_offset_x = y_factor * 5.0
+		shadow_alpha = clampf(0.32 + y_factor * 0.12, 0.22, 0.42)
+
+	var shadow_w = s * 2.8 * shadow_pulse * shadow_depth_scale
+	var shadow_h = s * 1.0 * shadow_pulse * shadow_depth_scale
 	var shadow_y_off = s * 0.7 + 8.0
 	_draw_shadow_ellipse(
-		Rect2(kb.x - shadow_w / 2, shadow_y_off - shadow_h / 2 + kb.y, shadow_w, shadow_h),
-		Color(0, 0, 0, 0.38)
+		Rect2(kb.x - shadow_w / 2 + shadow_offset_x, shadow_y_off - shadow_h / 2 + kb.y, shadow_w, shadow_h),
+		Color(0, 0, 0, shadow_alpha)
 	)
 
 	# Boss aura (behind sprite)
@@ -420,6 +433,15 @@ func _draw():
 			var breath = sin(anim_time * 2.5)
 			scale_y = base_scale * (1.0 + breath * 0.04)
 			scale_x = base_scale * (1.0 - breath * 0.025)
+
+		# Apply perspective depth scaling
+		if game and game.is_sideview_game:
+			var depth_scale = DepthPlanes.get_scale_for_y(position.y)
+			# Add slight vertical squash for perspective
+			var y_factor = clampf((position.y - 280.0) / 300.0, -0.3, 0.3)
+			var perspective_squash = 1.0 - abs(y_factor) * 0.08
+			scale_x *= depth_scale
+			scale_y *= depth_scale * perspective_squash
 
 		# Apply spring squash factor
 		scale_y *= squash_factor
@@ -499,9 +521,25 @@ func _draw():
 		draw_set_transform(Vector2.ZERO, 0, Vector2.ONE)
 
 func _draw_shadow_ellipse(rect: Rect2, col: Color):
+	"""Enhanced shadow with dual-layer gradient falloff (optimized)."""
 	var center = rect.position + rect.size / 2
-	var pts = PackedVector2Array()
-	for i in range(16):
-		var angle = TAU * i / 16.0
-		pts.append(center + Vector2(cos(angle) * rect.size.x / 2, sin(angle) * rect.size.y / 2))
-	draw_colored_polygon(pts, col)
+
+	# Layer 1: Outer soft shadow (ambient shadow)
+	var outer_points = PackedVector2Array()
+	for i in range(12):  # Reduced for performance
+		var angle = TAU * i / 12.0
+		outer_points.append(center + Vector2(
+			cos(angle) * rect.size.x * 0.6,
+			sin(angle) * rect.size.y * 0.6
+		))
+	draw_colored_polygon(outer_points, Color(col.r, col.g, col.b, col.a * 0.25))
+
+	# Layer 2: Inner contact shadow
+	var inner_points = PackedVector2Array()
+	for i in range(12):
+		var angle = TAU * i / 12.0
+		inner_points.append(center + Vector2(
+			cos(angle) * rect.size.x * 0.4,
+			sin(angle) * rect.size.y * 0.4
+		))
+	draw_colored_polygon(inner_points, col)

@@ -17,6 +17,10 @@ var keep_left: float = 0
 var keep_right: float = 2400
 var keep_top: float = 0
 var keep_bottom: float = 720
+var ring_left: float = 0
+var ring_right: float = 2400
+var ring_top: float = 0
+var ring_bottom: float = 720
 var barricades: Array = []
 var doors: Array = []
 var entrance_positions: Array[Vector2] = []
@@ -30,8 +34,11 @@ var obstacle_rects: Array[Rect2] = []
 
 # Checkpoints and goal
 var checkpoints: Array = []
-var goal_rect: Rect2 = Rect2.ZERO
+var goal_rect: Rect2 = Rect2(0, 0, 0, 0)
 var checkpoint_rects: Array[Rect2] = []
+
+# Grapple anchors - positions player can grapple to (Main Game mechanic)
+var grapple_anchors: Array[Vector2] = []
 
 # Waypoints for pathfinding (platform corners, ramp positions, etc.)
 var waypoints: Array[Vector2] = []
@@ -41,9 +48,22 @@ var anim_time: float = 0.0
 var bg_tint: Color = Color(1.0, 1.0, 1.0)
 var bg_texture: Texture2D = null
 
+# Terrain textures
+var terrain_texture: ImageTexture = null
+var terrain_normal: ImageTexture = null
+var platform_texture: ImageTexture = null
+
+# Lighting system
+var lighting_system: LightingSystem = null
+
 # Alias for HUD/shop compatibility
 var map_config: Dictionary:
 	get: return level_config
+
+# Procedural decor cache (built once per level)
+var _decor_rocks: Array = []
+var _decor_plants: Array = []
+var _decor_props: Array = []
 
 func setup(game_ref, level_id: int):
 	game = game_ref
@@ -60,20 +80,79 @@ func setup(game_ref, level_id: int):
 	keep_right = level_width * 0.8
 	keep_top = level_height * 0.2
 	keep_bottom = level_height * 0.8
+	ring_left = level_width * 0.15
+	ring_right = level_width * 0.85
+	ring_top = level_height * 0.15
+	ring_bottom = level_height * 0.85
 	entrance_positions = [Vector2(level_width * 0.5, 0), Vector2(level_width, level_height * 0.5), Vector2(level_width * 0.5, level_height), Vector2(0, level_height * 0.5)]
 	keep_entrance_positions = [Vector2(keep_left, keep_top), Vector2(keep_right, keep_top), Vector2(keep_left, keep_bottom), Vector2(keep_right, keep_bottom)]
 
 	_build_collision()
 	_build_checkpoints()
 	_build_waypoints()
-	
+	_build_grapple_anchors()
+	_build_procedural_decor()
+
+	# Load procedural terrain textures for current theme
+	var theme = level_config.get("theme", "grass")
+	terrain_texture = TerrainTextureGenerator.get_terrain_texture(theme)
+	terrain_normal = TerrainTextureGenerator.get_normal_map(theme)
+	platform_texture = TerrainTextureGenerator.get_platform_texture(theme)
+
+	# Initialize lighting system
+	lighting_system = LightingSystem.new()
+	lighting_system.setup(theme)
+
+	bg_tint = Color(1.0, 1.0, 1.0)
 	var tex_path = level_config.get("bg_texture_path", "")
 	if not tex_path.is_empty() and ResourceLoader.exists(tex_path):
 		bg_texture = load(tex_path)
 	else:
 		bg_texture = null
-	bg_tint = Color(1.0, 1.0, 1.0)
 	queue_redraw()
+
+func _build_grapple_anchors():
+	grapple_anchors.clear()
+	for a in level_config.get("grapple_anchors", []):
+		grapple_anchors.append(Vector2(float(a.get("x", 0)), float(a.get("y", 0))))
+
+func _build_procedural_decor():
+	_decor_rocks.clear()
+	_decor_plants.clear()
+	_decor_props.clear()
+	var rng = RandomNumberGenerator.new()
+	rng.seed = int(level_config.get("id", 1)) * 7919 + int(level_width)
+	var theme = level_config.get("theme", "grass")
+	# Rocks/debris along floor edges (dense scatter)
+	for rect in floor_rects:
+		var count = int(rect.size.x / 45) + 4
+		for i in range(count):
+			var fx = rect.position.x + rng.randf_range(10, rect.size.x - 10)
+			var fy = rect.position.y + rect.size.y - rng.randf_range(0, 8)
+			_decor_rocks.append({"x": fx, "y": fy, "w": rng.randf_range(8, 24), "h": rng.randf_range(4, 14), "seed": rng.randi()})
+	# Plants/bushes on floor tops (rich vegetation)
+	for rect in floor_rects:
+		var count = int(rect.size.x / 80) + 3
+		for i in range(count):
+			var fx = rect.position.x + rng.randf_range(30, rect.size.x - 30)
+			var fy = rect.position.y + rng.randf_range(0, 6)
+			_decor_plants.append({"x": fx, "y": fy, "h": rng.randf_range(12, 28), "w": rng.randf_range(14, 22), "seed": rng.randi()})
+	# Platform props (crystals on platform tops, vines, etc.)
+	for rect in platform_rects:
+		var count = int(rect.size.x / 50) + 2
+		for i in range(count):
+			var fx = rect.position.x + rng.randf_range(8, rect.size.x - 8)
+			var fy = rect.position.y - rng.randf_range(2, 12)
+			_decor_props.append({"x": fx, "y": fy, "type": theme, "seed": rng.randi()})
+	# Explicit decor from config
+	for d in level_config.get("decor", []):
+		_decor_props.append({
+			"x": float(d.get("x", 0)),
+			"y": float(d.get("y", 0)),
+			"type": str(d.get("type", theme)),
+			"seed": d.get("seed", rng.randi()),
+			"explicit": true
+		})
 
 func _build_collision():
 	floor_rects.clear()
@@ -81,23 +160,54 @@ func _build_collision():
 	platform_rects.clear()
 	obstacle_rects.clear()
 	
-	var layers = level_config.get("layers", [])
+	# Explicit floor segments (hand-crafted geometry - pits, elevated walkways)
+	var floor_segments = level_config.get("floor_segments", [])
+	if floor_segments.size() > 0:
+		for seg in floor_segments:
+			var x_min = float(seg.get("x_min", 0))
+			var x_max = float(seg.get("x_max", level_width))
+			var y_min = float(seg.get("y_min", 300))
+			var y_max = float(seg.get("y_max", 420))
+			floor_rects.append(Rect2(x_min, y_min, x_max - x_min, y_max - y_min))
+	else:
+		# Fallback: build from layers (full-width strips)
+		var layers = level_config.get("layers", [])
+		for layer in layers:
+			var layer_type = layer.get("type", "ground")
+			if layer_type == "ground" or layer_type == "cave":
+				var y_min = float(layer.get("y_min", 280))
+				var y_max = float(layer.get("y_max", 420))
+				floor_rects.append(Rect2(0, y_min, level_width, y_max - y_min))
 	
+	var layers = level_config.get("layers", [])
+	var platform_layer_ids: Array[String] = []
 	for layer in layers:
-		var layer_id = layer.get("id", "surface")
-		var y_min = float(layer.get("y_min", 280))
-		var y_max = float(layer.get("y_max", 420))
 		var layer_type = layer.get("type", "ground")
-		
-		if layer_type == "ground" or layer_type == "cave":
-			floor_rects.append(Rect2(0, y_min, level_width, y_max - y_min))
-		elif layer_type == "platform" or layer_type == "skybridge":
-			var platform_height = 20.0
-			var step = 400.0
-			var x = 0.0
-			while x < level_width:
-				platform_rects.append(Rect2(x, y_max - platform_height, minf(step, level_width - x), platform_height))
-				x += step
+		if layer_type == "platform" or layer_type == "skybridge":
+			platform_layer_ids.append(str(layer.get("id", "platform")))
+	
+	# Explicit platforms from config (hand-crafted)
+	var explicit_platforms = level_config.get("platforms", [])
+	for p in explicit_platforms:
+		var x = float(p.get("x", 0))
+		var y = float(p.get("y", 200))
+		var w = float(p.get("w", 120))
+		var h = float(p.get("h", 22))
+		platform_rects.append(Rect2(x, y, w, h))
+	
+	# Build from spawn zones (one platform per zone)
+	var platform_height = 22.0
+	var segments = level_config.get("segments", [])
+	for seg in segments:
+		for zone in seg.get("spawn_zones", []):
+			var zone_layer = str(zone.get("layer", "surface"))
+			if zone_layer in platform_layer_ids:
+				var x_min = float(zone.get("x_min", 0))
+				var x_max = float(zone.get("x_max", 100))
+				var y_max_z = float(zone.get("y_max", 260))
+				var w = maxf(60.0, x_max - x_min)
+				var plat_y = y_max_z - platform_height
+				platform_rects.append(Rect2(x_min, plat_y, w, platform_height))
 	
 	# Walls: left, right, top, bottom
 	var wall_w = 50.0
@@ -105,6 +215,13 @@ func _build_collision():
 	wall_rects.append(Rect2(level_width, -wall_w, wall_w, level_height + wall_w * 2))
 	wall_rects.append(Rect2(-wall_w, -wall_w, level_width + wall_w * 2, wall_w))
 	wall_rects.append(Rect2(-wall_w, level_height, level_width + wall_w * 2, wall_w))
+	# Interior wall segments (for wall-jump sections)
+	for w in level_config.get("wall_segments", []):
+		var wx = float(w.get("x", 0))
+		var wy = float(w.get("y", 0))
+		var ww = float(w.get("w", 20))
+		var wh = float(w.get("h", 200))
+		wall_rects.append(Rect2(wx, wy, ww, wh))
 
 func _build_checkpoints():
 	checkpoints = level_config.get("checkpoints", [])
@@ -120,6 +237,22 @@ func _build_waypoints():
 		waypoints.append(Vector2(cp.get("x", 0), cp.get("y", 350)))
 	waypoints.append(Vector2(level_width / 2.0, level_height / 2.0))
 	waypoints.append(goal_rect.position + goal_rect.size / 2.0)
+
+## Returns spawn position for player. Uses floor_segments if present, else layer-based spawn.
+func get_spawn_position() -> Vector2:
+	if floor_rects.size() == 0:
+		var layers = level_config.get("layers", [])
+		var y_min = float(layers[0].get("y_min", 280)) if layers.size() > 0 else 280.0
+		return Vector2(80.0, y_min - 26.0)
+	# Use leftmost floor that contains x=80 or is near start
+	var best = floor_rects[0]
+	for rect in floor_rects:
+		if rect.position.x < best.position.x:
+			best = rect
+		elif rect.position.x == best.position.x and rect.position.y < best.position.y:
+			best = rect
+	var spawn_x = clampf(80.0, best.position.x + 30, best.position.x + best.size.x - 30)
+	return Vector2(spawn_x, best.position.y - 26.0)
 
 func get_player_anchor() -> Vector2:
 	if game == null:
@@ -165,6 +298,63 @@ func resolve_collision(pos: Vector2, radius: float) -> Vector2:
 		pos = _push_out_of_rect(pos, radius, rect)
 	return pos
 
+## Sideview (front-view) collision for Main Game beat-em-up mode.
+## Returns {position: Vector2, velocity: Vector2} with resolved collision and velocity.
+func resolve_sideview_collision(pos: Vector2, vel: Vector2, radius: float, ignore_platforms: bool) -> Dictionary:
+	for rect in wall_rects:
+		var prev = pos
+		pos = _push_out_of_rect(pos, radius, rect)
+		# Only zero velocity if we actually collided with this wall (position changed)
+		if pos.distance_to(prev) > 0.01:
+			if rect.size.x < rect.size.y:
+				vel.x = 0.0
+			else:
+				vel.y = 0.0
+	for rect in floor_rects:
+		var prev_pos = pos
+		pos = _push_out_of_rect(pos, radius, rect)
+		if pos.y < prev_pos.y:
+			vel.y = 0.0
+	for rect in platform_rects:
+		if ignore_platforms:
+			continue
+		if vel.y >= 0 and pos.y + radius >= rect.position.y - 2 and pos.y - radius <= rect.position.y + rect.size.y + 2:
+			var prev_pos = pos
+			pos = _push_out_of_rect(pos, radius, rect)
+			if pos.y < prev_pos.y:
+				vel.y = 0.0
+	for rect in obstacle_rects:
+		var prev = pos
+		pos = _push_out_of_rect(pos, radius, rect)
+		if pos.distance_to(prev) > 0.01:
+			vel.x = 0.0
+			vel.y = 0.0
+	return {"position": pos, "velocity": vel}
+
+## Returns true if position is standing on floor or platform (for sideview ground check).
+func get_ground_check(pos: Vector2, radius: float) -> bool:
+	var foot_y = pos.y + radius
+	var above_tolerance = 4.0   # Allow feet slightly above surface (pre-landing)
+	var below_tolerance = 18.0  # Allow feet slightly into surface (post-collision)
+	for rect in floor_rects:
+		if pos.x + radius >= rect.position.x and pos.x - radius <= rect.position.x + rect.size.x:
+			if foot_y >= rect.position.y - above_tolerance and foot_y <= rect.position.y + below_tolerance:
+				return true
+	for rect in platform_rects:
+		if pos.x + radius >= rect.position.x and pos.x - radius <= rect.position.x + rect.size.x:
+			if foot_y >= rect.position.y - above_tolerance and foot_y <= rect.position.y + below_tolerance:
+				return true
+	return false
+
+## Returns true if there is a vertical wall within radius in the given direction (-1=left, 1=right). For wall jump.
+func get_wall_at_position(pos: Vector2, radius: float, dir: int) -> bool:
+	var check = pos + Vector2(radius * 1.5 * dir, 0)
+	for rect in wall_rects:
+		if rect.size.x < rect.size.y:
+			if rect.has_point(check):
+				return true
+	return false
+
 func _push_out_of_rect(pos: Vector2, radius: float, rect: Rect2) -> Vector2:
 	var closest_x = clampf(pos.x, rect.position.x, rect.position.x + rect.size.x)
 	var closest_y = clampf(pos.y, rect.position.y, rect.position.y + rect.size.y)
@@ -207,6 +397,10 @@ func get_nearest_barricade_in_range(_pos: Vector2, _range_dist: float):
 func get_nearest_door_in_range(_pos: Vector2, _range_dist: float):
 	return null
 
+func get_nearest_closed_door(_pos: Vector2, _range_dist: float):
+	"""Returns the nearest closed (blocking) door within range. LinearMap has no doors; stub for compatibility."""
+	return null
+
 func get_outside_ally_position(player_index: int) -> Vector2:
 	var anchor = get_player_anchor()
 	if player_index == 1:
@@ -237,8 +431,45 @@ func get_zone_gold_mult(pos: Vector2) -> float:
 				return mult
 	return 1.0
 
+# Theme-based colors: [floor_fill, floor_edge, platform_fill, platform_top, platform_shadow, decor_accent]
+const THEME_COLORS = {
+	"grass": [Color8(75, 95, 55), Color8(55, 75, 40), Color8(140, 115, 80), Color8(175, 145, 100), Color8(45, 55, 35), Color8(85, 140, 75)],
+	"cave": [Color8(58, 50, 62), Color8(42, 36, 48), Color8(95, 85, 90), Color8(120, 108, 115), Color8(30, 26, 35), Color8(140, 160, 200)],
+	"sky": [Color8(135, 150, 175), Color8(100, 120, 150), Color8(165, 175, 195), Color8(195, 205, 220), Color8(80, 95, 120), Color8(220, 230, 245)],
+	"summit": [Color8(155, 165, 175), Color8(125, 135, 145), Color8(170, 178, 188), Color8(200, 208, 218), Color8(100, 110, 120), Color8(185, 195, 205)],
+	"lava": [Color8(65, 35, 30), Color8(45, 22, 18), Color8(95, 55, 45), Color8(125, 75, 60), Color8(35, 18, 15), Color8(180, 85, 50)],
+	"ice": [Color8(165, 185, 200), Color8(135, 160, 180), Color8(185, 200, 215), Color8(210, 225, 240), Color8(100, 120, 140), Color8(200, 220, 240)]
+}
+
+func _get_theme_colors() -> Array:
+	var theme = level_config.get("theme", "grass")
+	return THEME_COLORS.get(theme, THEME_COLORS["grass"])
+
+func _get_pit_rects() -> Array:
+	"""Returns rects for gaps between floor segments (pits/chasms to fill with dark)."""
+	var pits: Array = []
+	var floor_segments = level_config.get("floor_segments", [])
+	if floor_segments.size() < 2:
+		return pits
+	var sorted = floor_segments.duplicate()
+	sorted.sort_custom(func(a, b): return a.get("x_min", 0) < b.get("x_min", 0))
+	for i in range(sorted.size() - 1):
+		var left = sorted[i]
+		var right = sorted[i + 1]
+		var gap_start = left.get("x_max", 0)
+		var gap_end = right.get("x_min", 0)
+		if gap_end > gap_start:
+			var pit_bottom = level_height + 50
+			var pit_top = minf(float(left.get("y_min", 400)), float(right.get("y_min", 400))) - 5
+			pits.append(Rect2(gap_start, pit_top, gap_end - gap_start, pit_bottom - pit_top))
+	return pits
+
 func _draw():
-	if bg_texture:
+	# Skip full background when ParallaxBackdrop is active (it draws themed sky/hills)
+	var use_parallax = game != null and "parallax_backdrop" in game and game.parallax_backdrop != null
+	if use_parallax:
+		pass  # ParallaxBackdrop draws the background
+	elif bg_texture:
 		var tex_size = bg_texture.get_size()
 		var sx = level_width / tex_size.x
 		var sy = level_height / tex_size.y
@@ -247,40 +478,230 @@ func _draw():
 		draw_set_transform(Vector2.ZERO, 0, Vector2.ONE)
 	else:
 		draw_rect(Rect2(0, 0, level_width, level_height), Color8(52, 90, 40))
+
+	# Pits/chasms - dark void with depth gradient (draw before floor so floor overlaps edges)
+	var pit_colors = {"grass": Color8(25, 35, 30), "cave": Color8(8, 6, 12), "sky": Color8(60, 80, 120), "summit": Color8(40, 50, 65), "lava": Color8(20, 8, 6), "ice": Color8(50, 70, 90)}
+	var theme = level_config.get("theme", "grass")
+	var pit_col = pit_colors.get(theme, Color8(25, 35, 30))
+	for pit in _get_pit_rects():
+		draw_rect(pit, pit_col)
+		# Inner darker strip (depth illusion)
+		draw_rect(Rect2(pit.position.x + 8, pit.position.y, pit.size.x - 16, pit.size.y), pit_col.darkened(0.25))
+		# Top edge shadow
+		draw_rect(Rect2(pit.position.x, pit.position.y, pit.size.x, 8), Color(0, 0, 0, 0.4))
+
+	var pal = _get_theme_colors()
+	var floor_fill: Color = pal[0]
+	var floor_edge: Color = pal[1]
+	var plat_fill: Color = pal[2]
+	var plat_top: Color = pal[3]
+	var plat_shadow: Color = pal[4]
 	
-	# Floor
+	# Floor - textured with depth and lighting
 	for rect in floor_rects:
-		draw_rect(rect, Color8(85, 70, 50, 180))
+		var edge_h = minf(14.0, rect.size.y * 0.2)
+
+		# Draw tiled terrain texture
+		if terrain_texture:
+			var tile_size = 64.0
+			var tiles_x = int(ceil(rect.size.x / tile_size))
+			var tiles_y = int(ceil(rect.size.y / tile_size))
+
+			for ty in range(tiles_y):
+				for tx in range(tiles_x):
+					var tile_x = rect.position.x + tx * tile_size
+					var tile_y = rect.position.y + ty * tile_size
+					var tile_w = min(tile_size, rect.position.x + rect.size.x - tile_x)
+					var tile_h = min(tile_size, rect.position.y + rect.size.y - tile_y)
+
+					# Apply lighting gradient (darker at bottom for depth)
+					var depth_factor = float(ty) / max(tiles_y, 1)
+					var tint = Color(1.0 - depth_factor * 0.15, 1.0 - depth_factor * 0.15, 1.0 - depth_factor * 0.15, 1.0)
+
+					# Draw textured tile
+					draw_texture_rect_region(
+						terrain_texture,
+						Rect2(tile_x, tile_y, tile_w, tile_h),
+						Rect2(0, 0, tile_w, tile_h),
+						tint
+					)
+		else:
+			# Fallback to solid color if texture missing
+			draw_rect(rect, floor_fill)
+
+		# Top edge band (front face - the visible cliff/terrain edge)
+		draw_rect(Rect2(rect.position.x, rect.position.y, rect.size.x, edge_h), floor_edge.lightened(0.12))
+		# Edge highlight line
+		draw_line(Vector2(rect.position.x, rect.position.y), Vector2(rect.position.x + rect.size.x, rect.position.y), floor_edge.lightened(0.3), 1.5)
+		# Left/right vertical edges (for segmented floors)
+		draw_rect(Rect2(rect.position.x, rect.position.y, 6, rect.size.y), floor_edge.darkened(0.1))
+		draw_rect(Rect2(rect.position.x + rect.size.x - 6, rect.position.y, 6, rect.size.y), floor_edge.darkened(0.1))
+
+		# Edge detail along top (grass tufts, rocks, crystals by theme)
+		var rng2 = RandomNumberGenerator.new()
+		rng2.seed = int(rect.position.x) * 31 + int(rect.position.y)
+		for _j in range(int(rect.size.x / 40) + 1):
+			var gx = rect.position.x + rng2.randf_range(8, rect.size.x - 8)
+			var gy = rect.position.y + rng2.randf_range(0, 5)
+			match theme:
+				"grass":
+					var gh = rng2.randf_range(6, 14)
+					draw_line(Vector2(gx, gy), Vector2(gx + rng2.randf_range(-3, 3), gy - gh), pal[5], 1.5)
+				"cave":
+					draw_rect(Rect2(gx - 2, gy - 6, 4, 6), floor_edge.lightened(0.1))
+				"summit", "ice":
+					draw_circle(Vector2(gx, gy - 2), 3, Color(0.95, 0.97, 1.0, 0.5))
+				_:
+					draw_rect(Rect2(gx - 1, gy - 4, 2, 4), floor_edge)
+		# Subtle tile/crack lines (every 96px)
+		var tile_w = 96.0
+		var tx = rect.position.x + fmod(anim_time * 0.5, tile_w)
+		while tx < rect.position.x + rect.size.x:
+			draw_line(Vector2(tx, rect.position.y + edge_h), Vector2(tx, rect.position.y + rect.size.y), Color(0, 0, 0, 0.06), 1.0)
+			tx += tile_w
 	
-	# Platforms
+	# Sky theme: support pillars/chains below platforms
+	if theme == "sky":
+		for rect in platform_rects:
+			var cx = rect.position.x + rect.size.x * 0.5
+			var top = rect.position.y + rect.size.y
+			var pillar_h = minf(80.0, level_height - top - 50)
+			if pillar_h > 15:
+				draw_rect(Rect2(cx - 3, top, 6, pillar_h), Color8(100, 90, 75, 180))
+				draw_rect(Rect2(cx - 2, top, 4, pillar_h * 0.3), Color8(130, 115, 95, 200))
+
+	# Platforms - textured floating blocks with depth shadows
 	for rect in platform_rects:
-		draw_rect(Rect2(rect.position.x + 2, rect.position.y + 2, rect.size.x, rect.size.y), Color8(60, 50, 40))
-		draw_rect(rect, Color8(120, 95, 70))
-		draw_rect(Rect2(rect.position.x, rect.position.y, rect.size.x, 4), Color8(145, 115, 85))
-	
-	# Checkpoint markers
+		var px = rect.position.x
+		var py = rect.position.y
+		var pw = rect.size.x
+		var ph = rect.size.y
+
+		# Enhanced shadow with blur effect (optimized to 2 layers)
+		var shadow_offset = 6.0
+		# Outer shadow layer
+		draw_rect(Rect2(px + shadow_offset + 2, py + shadow_offset + 2, pw, ph), Color(0, 0, 0, 0.15))
+		# Inner shadow layer
+		draw_rect(Rect2(px + shadow_offset, py + shadow_offset, pw, ph), Color(0, 0, 0, 0.25))
+
+		# Draw tiled platform texture
+		if platform_texture:
+			var tile_size = 64.0
+			var tiles_x = int(ceil(pw / tile_size))
+			var tiles_y = int(ceil(ph / tile_size))
+
+			for ty in range(tiles_y):
+				for tx in range(tiles_x):
+					var tile_x = px + tx * tile_size
+					var tile_y = py + ty * tile_size
+					var tile_w = min(tile_size, px + pw - tile_x)
+					var tile_h = min(tile_size, py + ph - tile_y)
+
+					draw_texture_rect_region(
+						platform_texture,
+						Rect2(tile_x, tile_y, tile_w, tile_h),
+						Rect2(0, 0, tile_w, tile_h),
+						Color(1, 1, 1, 1)
+					)
+		else:
+			# Fallback to beveled platform
+			draw_rect(Rect2(px, py, pw, ph), plat_fill)
+			draw_rect(Rect2(px, py, pw, 6), plat_top)
+			draw_rect(Rect2(px, py + 6, 4, ph - 6), plat_fill.darkened(0.08))
+			draw_rect(Rect2(px + pw - 4, py + 6, 4, ph - 6), plat_fill.darkened(0.08))
+
+		# Theme-specific platform overlays
+		if theme == "summit" or theme == "ice":
+			# Snow accumulation on platform tops
+			draw_rect(Rect2(px, py - 2, pw, 4), Color(0.95, 0.98, 1.0, 0.7))
+			draw_rect(Rect2(px + 4, py - 4, pw - 8, 3), Color(1, 1, 1, 0.5))
+
+	# Apply directional lighting (SIMPLIFIED - reduced resolution for performance)
+	if lighting_system and terrain_normal:
+		# DISABLED: lighting overlay is too expensive
+		# Instead, use simple depth-based darkening on floors
+		for rect in floor_rects:
+			# Simple top-to-bottom gradient for depth
+			var gradient_rects = 4  # Only 4 bands instead of 256 quads
+			for i in range(gradient_rects):
+				var band_h = rect.size.y / gradient_rects
+				var band_y = rect.position.y + i * band_h
+				var depth_factor = float(i) / gradient_rects
+				var darken_alpha = depth_factor * 0.08  # Subtle darkening
+				draw_rect(Rect2(rect.position.x, band_y, rect.size.x, band_h), Color(0, 0, 0, darken_alpha))
+
+		# Ambient occlusion at terrain corners (simplified)
+		for rect in floor_rects:
+			if rect.size.y > 60:
+				# Just top corners
+				draw_rect(Rect2(rect.position.x, rect.position.y, 15, 15), Color(0, 0, 0, 0.12))
+				draw_rect(Rect2(rect.position.x + rect.size.x - 15, rect.position.y, 15, 15), Color(0, 0, 0, 0.12))
+
+	# Rocks/debris along floor bottoms
+	var rock_col = floor_edge.darkened(0.2)
+	for r in _decor_rocks:
+		var rx = r.x - r.w * 0.5
+		var ry = r.y - r.h
+		draw_rect(Rect2(rx, ry, r.w, r.h), rock_col)
+		draw_rect(Rect2(rx + 2, ry + 2, r.w * 0.6, r.h * 0.5), rock_col.lightened(0.1))
+
+	# Plants/bushes on floor tops (theme-specific)
+	for p in _decor_plants:
+		var px = p.x - p.w * 0.5
+		var py = p.y
+		match theme:
+			"grass":
+				draw_rect(Rect2(px, py - p.h, p.w, p.h), pal[5].darkened(0.1))
+				draw_rect(Rect2(px + p.w * 0.2, py - p.h * 0.6, p.w * 0.5, p.h * 0.5), pal[5])
+				draw_circle(Vector2(px + p.w * 0.5, py - p.h + 6), 4, Color(1, 0.85, 0.3, 0.7))
+			"cave":
+				draw_rect(Rect2(px + p.w * 0.2, py - p.h * 0.5, 4, p.h * 0.5), Color8(90, 75, 65))
+				draw_rect(Rect2(px, py - p.h * 0.4, p.w * 0.6, p.h * 0.25), Color8(120, 100, 110))
+			"sky":
+				draw_rect(Rect2(px, py - p.h * 0.8, p.w * 0.4, p.h * 0.8), Color8(140, 160, 180))
+				draw_circle(Vector2(px + p.w * 0.5, py - p.h + 4), 6, Color8(200, 220, 240, 200))
+			"summit", "ice":
+				draw_rect(Rect2(px + 2, py - p.h * 0.6, 6, p.h * 0.6), Color8(180, 190, 200))
+				draw_circle(Vector2(px + p.w * 0.5, py - p.h + 3), 5, Color(0.95, 0.97, 1.0, 0.8))
+			_:
+				draw_rect(Rect2(px, py - p.h, p.w, p.h), pal[5].darkened(0.15))
+
+	# Platform props (crystals, vines, chains)
+	for prop in _decor_props:
+		var px = prop.x
+		var py = prop.y
+		var pt = str(prop.get("type", theme))
+		match pt:
+			"grass":
+				draw_line(Vector2(px, py + 20), Vector2(px + 4, py), pal[5].darkened(0.2), 2.0)
+				draw_circle(Vector2(px + 4, py - 2), 5, pal[5])
+			"cave":
+				draw_rect(Rect2(px - 3, py - 18, 6, 18), Color8(140, 160, 200, 220))
+				draw_rect(Rect2(px - 2, py - 16, 4, 6), Color8(180, 200, 255, 150))
+			"sky":
+				draw_line(Vector2(px, py + 15), Vector2(px, py - 8), Color8(120, 100, 80), 1.5)
+				draw_circle(Vector2(px, py - 10), 4, Color8(200, 190, 170))
+			"summit", "ice":
+				draw_rect(Rect2(px - 2, py - 14, 4, 14), Color(0.9, 0.95, 1.0, 0.6))
+				draw_rect(Rect2(px - 1, py - 12, 2, 4), Color(1, 1, 1, 0.4))
+			_:
+				draw_circle(Vector2(px, py - 5), 4, pal[3])
+
+	# Checkpoint markers - glowing posts
 	var font = ThemeDB.fallback_font
 	for i in range(checkpoints.size()):
 		var cp = checkpoints[i]
 		var cx = cp.get("x", 0)
 		var cy = cp.get("y", 350)
-		draw_rect(Rect2(cx - 30, cy - 40, 60, 80), Color8(100, 180, 120, 100))
-		draw_rect(Rect2(cx - 30, cy - 40, 60, 80), Color8(80, 200, 100), false, 2.0)
-		draw_string(font, Vector2(cx - 10, cy + 5), str(i + 1), HORIZONTAL_ALIGNMENT_CENTER, 20, 14, Color.WHITE)
+		var pulse = 0.7 + 0.3 * sin(anim_time * 4.0 + i)
+		draw_rect(Rect2(cx - 32, cy - 48, 64, 100), Color(0.2, 0.9, 0.5, 0.15 * pulse))
+		draw_rect(Rect2(cx - 28, cy - 44, 56, 92), Color8(40, 180, 100, 200))
+		draw_rect(Rect2(cx - 28, cy - 44, 56, 92), Color8(60, 220, 130, pulse * 255), false, 2.5)
+		draw_string(font, Vector2(cx - 12, cy + 8), str(i + 1), HORIZONTAL_ALIGNMENT_CENTER, 22, 16, Color.WHITE)
 	
-	# Goal
-	draw_rect(goal_rect, Color8(255, 200, 50, 150))
-	draw_rect(goal_rect, Color8(255, 220, 80), false, 3.0)
-	draw_string(font, goal_rect.position + Vector2(goal_rect.size.x / 2 - 15, goal_rect.size.y / 2 + 5), "GOAL", HORIZONTAL_ALIGNMENT_CENTER, 30, 16, Color.WHITE)
-	
-	# Grid
-	var grid_spacing = 80.0
-	var grid_col = Color8(120, 100, 75, 20)
-	var gx = 0.0
-	while gx <= level_width:
-		draw_line(Vector2(gx, 0), Vector2(gx, level_height), grid_col, 0.5)
-		gx += grid_spacing
-	var gy = 0.0
-	while gy <= level_height:
-		draw_line(Vector2(0, gy), Vector2(level_width, gy), grid_col, 0.5)
-		gy += grid_spacing
+	# Goal - dramatic golden arch
+	draw_rect(Rect2(goal_rect.position.x - 10, goal_rect.position.y - 20, goal_rect.size.x + 20, goal_rect.size.y + 40), Color(1.0, 0.85, 0.2, 0.25))
+	draw_rect(goal_rect, Color8(255, 200, 50, 200))
+	draw_rect(goal_rect, Color8(255, 235, 100), false, 4.0)
+	var goal_pulse = 0.8 + 0.2 * sin(anim_time * 3.0)
+	draw_string(font, goal_rect.position + Vector2(goal_rect.size.x / 2 - 18, goal_rect.size.y / 2 + 6), "GOAL", HORIZONTAL_ALIGNMENT_CENTER, 32, 18, Color(1, 1, 0.9, goal_pulse))
