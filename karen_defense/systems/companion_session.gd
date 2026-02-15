@@ -76,6 +76,22 @@ func notify_new_wave():
 	if _ws != null and _ws.get_ready_state() == WebSocketPeer.STATE_OPEN:
 		_ws.send_text(JSON.stringify({ type = "new_wave" }))
 
+func send_minimap(enemies: Array, allies: Array, players: Array):
+	if _ws == null or _ws.get_ready_state() != WebSocketPeer.STATE_OPEN:
+		return
+	var payload = { type = "minimap", enemies = enemies, allies = allies, players = players }
+	_ws.send_text(JSON.stringify(payload))
+
+func send_bomb_impact(nx: float, ny: float, kills: int):
+	if _ws == null or _ws.get_ready_state() != WebSocketPeer.STATE_OPEN:
+		return
+	_ws.send_text(JSON.stringify({ type = "bomb_impact", x = clampf(nx, 0, 1), y = clampf(ny, 0, 1), kills = kills }))
+
+func send_supply_impact(nx: float, ny: float):
+	if _ws == null or _ws.get_ready_state() != WebSocketPeer.STATE_OPEN:
+		return
+	_ws.send_text(JSON.stringify({ type = "supply_impact", x = clampf(nx, 0, 1), y = clampf(ny, 0, 1) }))
+
 func is_session_connected() -> bool:
 	return _ws != null and _ws.get_ready_state() == WebSocketPeer.STATE_OPEN
 

@@ -37,6 +37,7 @@ func update_helicopter(delta: float) -> bool:
 	return false
 
 func _explode():
+	var kills := 0
 	for enemy in game.enemy_container.get_children():
 		if enemy.state in [EnemyEntity.EnemyState.DEAD, EnemyEntity.EnemyState.DYING]: continue
 		var dist = bomb_ground_pos.distance_to(enemy.position)
@@ -45,11 +46,15 @@ func _explode():
 			var dmg = int(DAMAGE * falloff)
 			enemy.last_damager = game.player_node
 			enemy.take_damage(dmg, game)
+			if enemy.state == EnemyEntity.EnemyState.DYING:
+				kills += 1
 			game.spawn_damage_number(enemy.position, str(dmg), Color8(255, 180, 50))
 	game.particles.emit_burst(bomb_ground_pos.x, bomb_ground_pos.y, Color8(255, 160, 30), 20, 0.6)
 	game.start_shake(5.0, 0.2)
 	if game.sfx:
 		game.sfx.play_grenade_explode()
+	if game.companion_session:
+		game._on_companion_bomb_landed(bomb_ground_pos, kills)
 	queue_free()
 
 func _draw():

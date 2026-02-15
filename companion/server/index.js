@@ -16,8 +16,8 @@ const COOLDOWN_BOMB_MS = 30000;
 const COOLDOWN_SUPPLY_MS = 45000;
 const BOMBS_PER_WAVE = 2;
 const SUPPLIES_PER_WAVE = 1;
-const MAX_MSG_SIZE = 512;
-const RATE_LIMIT_MSGS = 15;
+const MAX_MSG_SIZE = 4096;
+const RATE_LIMIT_MSGS = 50;
 const RATE_LIMIT_WINDOW_MS = 10000;
 const SESSION_EXPIRY_MS = 2 * 60 * 60 * 1000; // 2 hours
 
@@ -130,6 +130,18 @@ wss.on('connection', (ws) => {
           s.suppliesThisWave = 0;
           if (s.companion) safeSend(s.companion, { type: 'new_wave' });
         }
+      } else if (t === 'minimap' && ws.role === 'game' && ws.code) {
+        const s = sessions.get(ws.code);
+        if (s && s.companion) {
+          const fwd = { type: 'minimap', enemies: msg.enemies || [], allies: msg.allies || [], players: msg.players || [] };
+          safeSend(s.companion, fwd);
+        }
+      } else if (t === 'bomb_impact' && ws.role === 'game' && ws.code) {
+        const s = sessions.get(ws.code);
+        if (s && s.companion) safeSend(s.companion, { type: 'bomb_impact', x: msg.x, y: msg.y, kills: msg.kills ?? 0 });
+      } else if (t === 'supply_impact' && ws.role === 'game' && ws.code) {
+        const s = sessions.get(ws.code);
+        if (s && s.companion) safeSend(s.companion, { type: 'supply_impact', x: msg.x, y: msg.y });
       }
     } catch (e) { /* ignore malformed */ }
   });

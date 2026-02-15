@@ -102,6 +102,10 @@ var helicopter_entity: Node2D
 # Per-frame cache for ally target selection (avoids O(n*m) iteration)
 var ally_target_counts: Dictionary = {}
 
+# Companion minimap broadcast throttle
+var _companion_minimap_timer: float = 0.0
+const COMPANION_MINIMAP_INTERVAL: float = 0.15
+
 func _ready():
 	particles = ParticleSystem.new()
 	_build_scene_tree()
@@ -393,7 +397,11 @@ func _process_wave(delta):
 			if proj.update_effect(delta):
 				proj.queue_free()
 		elif proj is SupplyDropEntity:
-			proj.update_supply(delta)
+			var landed_pos = proj.update_supply(delta)
+			if landed_pos is Vector2:
+				_on_companion_supply_landed(landed_pos)
+		elif proj is HelicopterBombEntity:
+			pass
 		else:
 			proj.update_projectile(delta)
 	for gold in gold_container.get_children():
@@ -402,6 +410,29 @@ func _process_wave(delta):
 	if helicopter_entity and is_instance_valid(helicopter_entity):
 		if helicopter_entity.update_helicopter(delta):
 			helicopter_entity = null
+
+	# Send minimap data to companion (throttled)
+	if companion_session and companion_session.is_session_connected():
+		_companion_minimap_timer -= delta
+		if _companion_minimap_timer <= 0:
+			_companion_minimap_timer = COMPANION_MINIMAP_INTERVAL
+			var m = map
+			var w = maxf(m.SCREEN_W, 1.0)
+			var h = maxf(m.SCREEN_H, 1.0)
+			var enemies_arr: Array = []
+			for e in enemy_container.get_children():
+				if e.state in [EnemyEntity.EnemyState.DEAD, EnemyEntity.EnemyState.DYING]: continue
+				enemies_arr.append([e.position.x / w, e.position.y / h])
+			var allies_arr: Array = []
+			for a in ally_container.get_children():
+				if a.current_hp <= 0: continue
+				allies_arr.append([a.position.x / w, a.position.y / h])
+			var players_arr: Array = []
+			if not player_node.is_dead:
+				players_arr.append([player_node.position.x / w, player_node.position.y / h])
+			if p2_joined and player2_node and not player2_node.is_dead:
+				players_arr.append([player2_node.position.x / w, player2_node.position.y / h])
+			companion_session.send_minimap(enemies_arr, allies_arr, players_arr)
 
 	combat_system.resolve_frame(delta)
 	particles.update(delta)
@@ -526,6 +557,20 @@ func _on_companion_supply_drop(x: float, y: float):
 	var supply = SupplyDropEntity.new()
 	supply.setup(self, Vector2(wx, wy))
 	projectile_container.add_child(supply)
+
+func _on_companion_bomb_landed(pos: Vector2, kills: int):
+	if companion_session:
+		var m = map
+		var nx = (pos.x - m.FORT_LEFT) / maxf(m.FORT_RIGHT - m.FORT_LEFT, 1.0)
+		var ny = (pos.y - m.FORT_TOP) / maxf(m.FORT_BOTTOM - m.FORT_TOP, 1.0)
+		companion_session.send_bomb_impact(nx, ny, kills)
+
+func _on_companion_supply_landed(pos: Vector2):
+	if companion_session:
+		var m = map
+		var nx = (pos.x - m.FORT_LEFT) / maxf(m.FORT_RIGHT - m.FORT_LEFT, 1.0)
+		var ny = (pos.y - m.FORT_TOP) / maxf(m.FORT_BOTTOM - m.FORT_TOP, 1.0)
+		companion_session.send_supply_impact(nx, ny)
 
 
 func _apply_player_tether(delta: float):

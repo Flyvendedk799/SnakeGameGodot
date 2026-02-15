@@ -17,11 +17,16 @@ const COOLDOWN_BOMB_MS = 30000;
 const COOLDOWN_SUPPLY_MS = 45000;
 const BOMBS_PER_WAVE = 2;
 const SUPPLIES_PER_WAVE = 1;
+const MM_SIZE = 300;
+const PAD = 10;
 
 let ws = null, sessionCode = null;
 let lastBombAt = 0, lastSupplyAt = 0;
 let bombsRemaining = BOMBS_PER_WAVE, suppliesRemaining = SUPPLIES_PER_WAVE;
 let selectedAbility = 'bomb';
+
+let minimapData = { enemies: [], allies: [], players: [] };
+let impactFlash = null;
 
 const abilityInfo = {
   bomb: { cooldownMs: COOLDOWN_BOMB_MS, maxPerWave: BOMBS_PER_WAVE, hint: 'Tap map to drop bomb' },
@@ -35,6 +40,7 @@ function setupWsHandlers(socket) {
     if (m.type === 'game_connected') {
       bombsRemaining = BOMBS_PER_WAVE;
       suppliesRemaining = SUPPLIES_PER_WAVE;
+      minimapData = { enemies: [], allies: [], players: [] };
       waiting.classList.add('hidden');
       connected.classList.remove('hidden');
       connStatusEl.innerHTML = '<span class="status-dot online"></span> Connected';
@@ -49,6 +55,17 @@ function setupWsHandlers(socket) {
     } else if (m.type === 'new_wave') {
       bombsRemaining = BOMBS_PER_WAVE;
       suppliesRemaining = SUPPLIES_PER_WAVE;
+    } else if (m.type === 'minimap') {
+      minimapData = {
+        enemies: Array.isArray(m.enemies) ? m.enemies : [],
+        allies: Array.isArray(m.allies) ? m.allies : [],
+        players: Array.isArray(m.players) ? m.players : []
+      };
+    } else if (m.type === 'bomb_impact') {
+      impactFlash = { x: m.x, y: m.y, kills: m.kills || 0, type: 'bomb', at: Date.now() };
+      if (navigator.vibrate) navigator.vibrate(100);
+    } else if (m.type === 'supply_impact') {
+      impactFlash = { x: m.x, y: m.y, type: 'supply', at: Date.now() };
     }
   };
   socket.onclose = () => {
@@ -122,12 +139,61 @@ function getCooldownRemaining(ability) {
   return Math.max(0, info.cooldownMs - (Date.now() - lastAt));
 }
 
-function drawMap() {
+function drawMinimap() {
   const c = minimap.getContext('2d');
+  const inner = MM_SIZE - PAD * 2;
   c.fillStyle = '#1a1520';
-  c.fillRect(0, 0, 300, 300);
+  c.fillRect(0, 0, MM_SIZE, MM_SIZE);
   c.strokeStyle = '#4a3f6a';
-  c.strokeRect(10, 10, 280, 280);
+  c.strokeRect(PAD, PAD, inner, inner);
+
+  const toPx = (nx, ny) => [PAD + nx * inner, PAD + ny * inner];
+
+  c.fillStyle = 'rgba(85, 70, 50, 0.4)';
+  c.fillRect(PAD + inner * 0.1, PAD + inner * 0.05, inner * 0.8, inner * 0.7);
+
+  for (const e of minimapData.enemies.slice(0, 80)) {
+    const [px, py] = toPx(e[0], e[1]);
+    c.fillStyle = 'rgba(255, 80, 80, 0.9)';
+    c.beginPath();
+    c.arc(px, py, 2, 0, Math.PI * 2);
+    c.fill();
+  }
+  for (const a of minimapData.allies.slice(0, 24)) {
+    const [px, py] = toPx(a[0], a[1]);
+    c.fillStyle = 'rgba(80, 160, 255, 0.9)';
+    c.beginPath();
+    c.arc(px, py, 1.8, 0, Math.PI * 2);
+    c.fill();
+  }
+  for (const p of minimapData.players) {
+    const [px, py] = toPx(p[0], p[1]);
+    c.fillStyle = 'rgba(80, 255, 120, 1)';
+    c.beginPath();
+    c.arc(px, py, 3, 0, Math.PI * 2);
+    c.fill();
+  }
+
+  if (impactFlash) {
+    const age = (Date.now() - impactFlash.at) / 1000;
+    if (age > 1.2) impactFlash = null;
+    else {
+      const [px, py] = toPx(impactFlash.x, impactFlash.y);
+      const alpha = Math.max(0, 1 - age / 1.2);
+      const r = 8 + age * 15;
+      c.strokeStyle = impactFlash.type === 'bomb' ? `rgba(255, 150, 50, ${alpha * 0.8})` : `rgba(100, 220, 120, ${alpha * 0.8})`;
+      c.lineWidth = 3;
+      c.beginPath();
+      c.arc(px, py, r, 0, Math.PI * 2);
+      c.stroke();
+      if (impactFlash.type === 'bomb' && impactFlash.kills > 0 && age < 0.8) {
+        c.font = 'bold 14px system-ui';
+        c.fillStyle = `rgba(255, 220, 100, ${alpha})`;
+        c.textAlign = 'center';
+        c.fillText(impactFlash.kills + ' KILLS!', px, py - r - 4);
+      }
+    }
+  }
 }
 
 function doDrop(e) {
@@ -186,4 +252,11 @@ setInterval(() => {
   remainingEl.textContent = `${left}/${info.maxPerWave} left this wave`;
 }, 400);
 
-drawMap();
+function tick() {
+  if (connected.classList.contains('hidden') === false) {
+    drawMinimap();
+  }
+  requestAnimationFrame(tick);
+}
+drawMinimap();
+tick();

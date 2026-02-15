@@ -20,7 +20,7 @@ func setup(game_ref, world_pos: Vector2):
 	start_pos = Vector2(map.FORT_LEFT - 80, map.get_fort_center().y)
 	position = start_pos
 
-func update_supply(delta: float) -> bool:
+func update_supply(delta: float) -> Variant:
 	timer += delta
 	if phase == "fly":
 		var t = clampf(timer / fly_duration, 0, 1)
@@ -32,8 +32,9 @@ func update_supply(delta: float) -> bool:
 			position = Vector2(drop_pos.x, start_pos.y)
 	elif phase == "drop":
 		if timer >= drop_duration:
+			var pos = crate_ground_pos
 			_deliver()
-			return true
+			return pos
 	queue_redraw()
 	return false
 
