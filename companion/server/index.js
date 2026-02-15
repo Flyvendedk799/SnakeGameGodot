@@ -82,12 +82,15 @@ wss.on('connection', (ws) => {
       ws.msgWindowStart = now;
       ws.msgCount = 0;
     }
+    let msg, t;
+    try {
+      msg = JSON.parse(raw.toString());
+      if (typeof msg !== 'object' || msg === null || Array.isArray(msg)) return;
+      t = msg.type;
+      if (typeof t !== 'string') return;
+    } catch (e) { return; }
     if (t !== 'chopper_input' && ++ws.msgCount > RATE_LIMIT_MSGS) return;
     try {
-      const msg = JSON.parse(raw.toString());
-      if (typeof msg !== 'object' || msg === null || Array.isArray(msg)) return;
-      const t = msg.type;
-      if (typeof t !== 'string') return;
       if (t === 'join' && msg.code && msg.role) {
         const code = String(msg.code).toUpperCase();
         if (code.length !== 6) return;
