@@ -86,6 +86,7 @@ func _draw():
 
 	# === TOP CENTER: Wave info ===
 	_draw_wave_info(font)
+	_draw_mid_round_panel(font)
 
 	# === TOP RIGHT: Resources ===
 	_draw_resources(font)
@@ -259,6 +260,44 @@ func _draw_wave_info(font: Font):
 		if alive > 10:
 			count_alpha = 0.8 + 0.2 * sin(anim_time * 4.0)
 		draw_string(font, Vector2(cx - 60, 52), "Karens alive: %d" % alive, HORIZONTAL_ALIGNMENT_CENTER, 120, 12, Color(1.0, 0.59, 0.67, count_alpha))
+
+func _draw_mid_round_panel(font: Font):
+	if not game.wave_complete_pending and game.state != game.GameState.BETWEEN_WAVES:
+		return
+
+	var panel_x = 390.0
+	var panel_y = 74.0
+	var panel_w = 500.0
+	var panel_h = 88.0
+	var pulse = 0.82 + 0.18 * sin(anim_time * 4.8)
+
+	_draw_rounded_panel(Rect2(panel_x, panel_y, panel_w, panel_h), Color8(8, 8, 18, 220), Color(0.75, 0.64, 1.0, 0.45), 8.0)
+	draw_rect(Rect2(panel_x + 10, panel_y + 10, panel_w - 20, 2), Color(0.95, 0.85, 1.0, 0.15 + pulse * 0.25))
+
+	var barricade_damaged = 0
+	for b in game.map.barricades:
+		if b.current_hp < b.max_hp:
+			barricade_damaged += 1
+	var door_damaged = 0
+	for d in game.map.doors:
+		if d.reinforced and d.reinforcement_hp < d.max_reinforcement_hp:
+			door_damaged += 1
+
+	if game.wave_complete_pending:
+		var seconds_left = int(ceil(maxf(game.wave_complete_timer, 0.0)))
+		draw_string(font, Vector2(panel_x + 18, panel_y + 31), "Round clear! Next prep phase in %ds" % seconds_left, HORIZONTAL_ALIGNMENT_LEFT, -1, 18, Color8(180, 255, 160))
+		draw_string(font, Vector2(panel_x + 18, panel_y + 54), "Use this downtime to reload, regroup and plan your spend.", HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color8(190, 190, 215))
+	else:
+		draw_string(font, Vector2(panel_x + 18, panel_y + 31), "Preparation Phase", HORIZONTAL_ALIGNMENT_LEFT, -1, 18, Color8(255, 220, 130))
+		draw_string(font, Vector2(panel_x + 18, panel_y + 54), "Patch defenses and buy upgrades before you start the next wave.", HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color8(190, 190, 215))
+
+	var status_col = Color8(255, 180, 120) if barricade_damaged + door_damaged > 0 else Color8(130, 230, 150)
+	var status_text = "Damaged defenses: %d barricades, %d doors" % [barricade_damaged, door_damaged]
+	draw_string(font, Vector2(panel_x + 18, panel_y + 76), status_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, status_col)
+
+	if game.state == game.GameState.BETWEEN_WAVES:
+		var tip_alpha = 0.75 + 0.25 * sin(anim_time * 3.2)
+		draw_string(font, Vector2(panel_x + panel_w - 210, panel_y + 76), "Press Start Wave in shop when ready", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(0.95, 0.9, 0.72, tip_alpha))
 
 func _draw_resources(font: Font):
 	var rx = 1060.0

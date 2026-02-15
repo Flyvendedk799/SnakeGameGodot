@@ -445,6 +445,7 @@ func _process_wave(delta):
 	# Round transition: count down while game keeps running (no freeze), then open shop
 	if wave_complete_pending:
 		wave_complete_timer -= delta
+		wave_announce_sub = "Shop opening in %.0fs..." % ceil(maxf(wave_complete_timer, 0.0))
 		if wave_complete_timer <= 0:
 			wave_complete_pending = false
 			state = GameState.BETWEEN_WAVES
