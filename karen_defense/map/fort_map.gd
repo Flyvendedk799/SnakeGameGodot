@@ -368,6 +368,32 @@ func is_inside_fort(pos: Vector2) -> bool:
 func is_inside_keep(pos: Vector2) -> bool:
 	return pos.x > keep_left and pos.x < keep_right and pos.y > keep_top and pos.y < keep_bottom
 
+
+func is_line_walkable(from_pos: Vector2, to_pos: Vector2, radius: float = 10.0) -> bool:
+	var dist = from_pos.distance_to(to_pos)
+	if dist <= 1.0:
+		return true
+	var steps = int(ceil(dist / 22.0))
+	for i in range(steps + 1):
+		var t = float(i) / float(maxi(steps, 1))
+		var sample = from_pos.lerp(to_pos, t)
+		var resolved = resolve_collision(sample, radius)
+		if resolved.distance_to(sample) > 0.75:
+			return false
+	return true
+
+func get_navigation_waypoints() -> Array[Vector2]:
+	var points: Array[Vector2] = []
+	for ep in entrance_positions:
+		points.append(ep)
+	for kp in keep_entrance_positions:
+		points.append(kp)
+	for d in doors:
+		points.append(d.position)
+	points.append(get_fort_center())
+	points.append(get_keep_center())
+	return points
+
 func get_nearest_barricade_in_range(pos: Vector2, range_dist: float):
 	var best = null
 	var best_dist = INF

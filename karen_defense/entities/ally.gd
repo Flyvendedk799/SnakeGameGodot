@@ -102,11 +102,23 @@ func update_ally(delta: float, game):
 
 	queue_redraw()
 
-func _state_idle(_delta, game):
+func _state_idle(delta, game):
 	# Actively seek nearest enemy (no range cap in idle) so allies move toward enemies instead of waiting
 	target_enemy = _find_nearest_enemy_any_distance(game)
 	if target_enemy:
 		state = AllyState.ENGAGING
+		return
+	# No target yet: proactively escort nearest alive player and reposition.
+	var anchor = game.player_node
+	if game.p2_joined and game.player2_node and not game.player2_node.is_dead and position.distance_to(game.player2_node.position) < position.distance_to(game.player_node.position):
+		anchor = game.player2_node
+	if anchor and not anchor.is_dead:
+		var orbit = anchor.position + Vector2(cos(anim_time * 1.7), sin(anim_time * 1.3)) * 70.0
+		var to_orbit = orbit - position
+		if to_orbit.length() > 18.0:
+			last_dir = to_orbit.normalized()
+			position += last_dir * move_speed * 0.65 * delta
+			position = game.map.resolve_collision(position, entity_size)
 
 func _state_engaging(delta, game):
 	if not _is_valid_target(target_enemy):

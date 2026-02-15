@@ -32,6 +32,7 @@ var enemy_gold_mult: float = 1.0
 var xp_mult: float = 1.0
 var proj_speed_mult: float = 1.0
 var has_grenades: bool = false
+var grenade_count: int = 0
 
 # Potions
 var potion_count: int = 0
@@ -133,6 +134,8 @@ var ranged_charging: bool = false
 var ranged_charge_timer: float = 0.0
 var ranged_charge_time: float = 0.0  # 0 = instant fire (default AK), 0.8 = heavy revolver
 var ranged_charge_ready: bool = false  # True when fully charged
+var ranged_weapon_order: Array[String] = ["ak47"]
+var equipped_ranged_weapon: String = "ak47"
 
 # Mount state
 var has_dino_mount: bool = false
@@ -185,6 +188,8 @@ func _ready():
 		"height": 52.0,
 		"grip": Vector2(0.25, 0.5),
 		"rotation_offset": 0.0,
+		"damage_mult": 1.0,
+		"charge_time": 0.0,
 	}
 
 func has_equipment(equip_id: String) -> bool:
@@ -195,6 +200,9 @@ func buy_equipment(equip_id: String, game) -> bool:
 	if data.is_empty():
 		return false
 	var is_consumable = data.get("type", "equipment") == "consumable"
+	# Grenade belt is a stackable consumable refill.
+	if equip_id == "grenade_belt":
+		is_consumable = true
 	# Non-consumables can only be bought once
 	if not is_consumable and has_equipment(equip_id):
 		return false
@@ -212,14 +220,13 @@ func buy_equipment(equip_id: String, game) -> bool:
 		has_magnet = true
 	if effects.has("grenade"):
 		has_grenades = true
+		grenade_count += int(effects.get("grenade_count", 0))
 	if effects.has("dino_mount"):
 		has_dino_mount = true
 	if effects.has("melee_damage_mult"):
 		melee_damage = int(melee_damage * effects.melee_damage_mult)
-	if effects.has("ranged_damage_mult"):
+	if effects.has("ranged_damage_mult") and not data.has("weapon_mode"):
 		ranged_damage = int(ranged_damage * effects.ranged_damage_mult)
-	if data.has("charge_time"):
-		ranged_charge_time = data.charge_time
 	if effects.has("max_hp"):
 		var bonus = int(effects.max_hp)
 		max_hp += bonus
@@ -240,7 +247,13 @@ func buy_equipment(equip_id: String, game) -> bool:
 				"height": data.weapon_height,
 				"grip": data.weapon_grip,
 				"rotation_offset": data.weapon_rotation,
+				"damage_mult": float(effects.get("ranged_damage_mult", 1.0)),
+				"charge_time": float(data.get("charge_time", 0.0)),
 			}
+		if data.get("weapon_mode", "") == "ranged" and not ranged_weapon_order.has(equip_id):
+			ranged_weapon_order.append(equip_id)
+			equipped_ranged_weapon = equip_id
+			_equip_ranged_weapon(equip_id)
 	if game.sfx:
 		game.sfx.play_purchase()
 	return true
@@ -271,6 +284,7 @@ func reset():
 	repair_timer = 0.0
 	has_magnet = false
 	has_grenades = false
+	grenade_count = 0
 	dodge_chance = 0.0
 	lifesteal = 0
 	regen_rate = 0.0
@@ -310,6 +324,9 @@ func reset():
 	ranged_charge_timer = 0.0
 	ranged_charge_time = 0.0
 	ranged_charge_ready = false
+	ranged_weapon_order = ["ak47"]
+	equipped_ranged_weapon = "ak47"
+	_equip_ranged_weapon(equipped_ranged_weapon)
 	is_grappling = false
 	grapple_target = Vector2.ZERO
 	grapple_cooldown = 0.0
@@ -586,7 +603,7 @@ func _handle_combat(delta, game):
 
 	# Open the wheel after holding past threshold
 	if weapon_wheel_button_held and not weapon_wheel_open and weapon_wheel_press_time >= weapon_wheel.QUICK_TAP_THRESHOLD:
-		weapon_wheel.open(weapon_mode)
+		weapon_wheel.open(weapon_mode, ranged_weapon_order, equipped_ranged_weapon)
 		weapon_wheel_open = true
 		combo_index = 0
 		combo_window = 0
@@ -600,14 +617,17 @@ func _handle_combat(delta, game):
 		if swap_released:
 			# Released after hold - confirm wheel selection
 			var old_mode = weapon_mode
-			var new_mode = weapon_wheel.close()
+			var selection = weapon_wheel.close()
+			var new_mode = String(selection.get("mode", weapon_mode))
 			if new_mode == "throwable":
-				if has_grenades:
+				if has_grenades and grenade_count > 0:
 					weapon_wheel.track_weapon_change(old_mode, "throwable")
 					weapon_mode = "throwable"
 			else:
 				weapon_wheel.track_weapon_change(old_mode, new_mode)
 				weapon_mode = new_mode
+				if weapon_mode == "ranged":
+					_equip_ranged_weapon(String(selection.get("ranged_weapon", equipped_ranged_weapon)))
 			weapon_wheel_open = false
 			weapon_wheel_button_held = false
 			if game.sfx:
@@ -616,10 +636,12 @@ func _handle_combat(delta, game):
 		# Quick tap - swap to last weapon
 		var old_mode = weapon_mode
 		var new_mode = weapon_wheel.quick_swap(weapon_mode)
-		if new_mode == "throwable" and not has_grenades:
+		if new_mode == "throwable" and (not has_grenades or grenade_count <= 0):
 			new_mode = "melee"  # Fallback if no grenades
 		weapon_wheel.track_weapon_change(old_mode, new_mode)
 		weapon_mode = new_mode
+		if weapon_mode == "ranged":
+			_equip_ranged_weapon(equipped_ranged_weapon)
 		weapon_wheel_button_held = false
 		if game.sfx:
 			game.sfx.play_weapon_wheel_select()
@@ -681,9 +703,18 @@ func _handle_combat(delta, game):
 				# Release handled above (outside cooldown gate)
 			else:
 				# Standard ranged: hold to auto-fire
-				if is_held:
+				if is_held or is_just:
 					_do_ranged_attack(game)
-		elif weapon_mode == "throwable" and has_grenades:
+		elif weapon_mode == "throwable" and has_grenades and grenade_count >= 0:
+			if grenade_count <= 0:
+				if grenade_aiming:
+					grenade_aiming = false
+					grenade_aim_pulse = 0.0
+				if is_just and game:
+					game.spawn_damage_number(position + Vector2(0, -28), "NO GRENADES", Color8(255, 120, 90))
+					if game.sfx:
+						game.sfx.play_error()
+				return
 			if grenade_cooldown <= 0 and active_grenade_count < MAX_ACTIVE_GRENADES:
 				if is_held:
 					if not grenade_aiming:
@@ -721,7 +752,7 @@ func _do_ranged_attack(game):
 	var proj = ProjectileEntity.new()
 	proj.position = position
 	proj.direction = Vector2.from_angle(facing_angle)
-	proj.damage = ranged_damage
+	proj.damage = int(ranged_damage * _get_current_ranged_damage_mult())
 	proj.source = "player"
 	proj.owner_player = self
 	proj.proj_speed = 450.0 * proj_speed_mult
@@ -823,12 +854,17 @@ func _handle_grenade(delta, _game):
 	# This method just ticks the cooldown
 
 func _throw_grenade(game):
+	if grenade_count <= 0:
+		if game and game.sfx:
+			game.sfx.play_error()
+		return
 	grenade_cooldown = GRENADE_COOLDOWN_TIME
 	var gren = GrenadeEntity.new()
 	var throw_dist = grenade_aim_distance if grenade_aiming else 150.0
 	gren.setup(position, Vector2.from_angle(facing_angle), throw_dist, GRENADE_DAMAGE, self)
 	game.projectile_container.add_child(gren)
 	active_grenade_count += 1
+	grenade_count -= 1
 	squash_factor = 0.75  # Throw recoil
 	# Wind-up lunge
 	var throw_dir = Vector2.from_angle(facing_angle)
@@ -838,6 +874,20 @@ func _throw_grenade(game):
 
 func on_grenade_removed():
 	active_grenade_count = maxi(0, active_grenade_count - 1)
+
+func _get_current_ranged_damage_mult() -> float:
+	if weapon_configs.has(equipped_ranged_weapon):
+		return float(weapon_configs[equipped_ranged_weapon].get("damage_mult", 1.0))
+	return 1.0
+
+func _equip_ranged_weapon(weapon_id: String):
+	if not weapon_configs.has(weapon_id):
+		weapon_id = "ak47"
+	equipped_ranged_weapon = weapon_id
+	ranged_charge_time = float(weapon_configs[weapon_id].get("charge_time", 0.0))
+	ranged_charging = false
+	ranged_charge_timer = 0.0
+	ranged_charge_ready = false
 
 func _update_dash_trail(delta: float):
 	var i = dash_trail.size() - 1
@@ -1145,20 +1195,13 @@ func _draw():
 
 	# Draw held weapon at anchor point
 	if weapon_mode == "ranged":
-		# Show the best ranged weapon owned (heavy revolver if owned, otherwise ak47)
-		if weapon_configs.has("heavy_revolver"):
-			_draw_held_weapon("heavy_revolver", sprite_xform, flip)
-		else:
-			_draw_held_weapon("ak47", sprite_xform, flip)
+		_draw_held_weapon(equipped_ranged_weapon, sprite_xform, flip)
 	elif weapon_mode == "throwable":
 		if not grenade_aiming:
 			# Show gun holstered + grenade ready indicator (small grenade icon near hand)
-			if weapon_configs.has("heavy_revolver"):
-				_draw_held_weapon("heavy_revolver", sprite_xform, flip)
-			else:
-				_draw_held_weapon("ak47", sprite_xform, flip)
+			_draw_held_weapon(equipped_ranged_weapon, sprite_xform, flip)
 			# Floating grenade-ready indicator
-			if has_grenades and grenade_cooldown <= 0 and active_grenade_count < MAX_ACTIVE_GRENADES:
+			if has_grenades and grenade_count > 0 and grenade_cooldown <= 0 and active_grenade_count < MAX_ACTIVE_GRENADES:
 				var nade_bob = sin(idle_time * 3.0) * 3.0
 				var nade_x = flip_sign * 22.0
 				var nade_y = -35.0 + nade_bob
@@ -1194,7 +1237,7 @@ func _draw():
 	if weapon_mode == "throwable" and not is_dashing and not is_blocking:
 		if grenade_aiming:
 			_draw_grenade_aim_trajectory()
-		elif not grenade_aiming and has_grenades:
+		elif not grenade_aiming and has_grenades and grenade_count > 0:
 			# Show subtle throw direction hint when in throwable mode
 			var aim_dir = Vector2.from_angle(facing_angle)
 			for di in range(4):
@@ -1408,8 +1451,8 @@ func _draw():
 	draw_string(font, Vector2(badge_x + 3, badge_y + 12), mode_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, mode_col)
 
 	# Grenade count when in throwable mode
-	if weapon_mode == "throwable" and has_grenades:
-		var nade_count = MAX_ACTIVE_GRENADES - active_grenade_count
+	if weapon_mode == "throwable" and has_grenades and grenade_count >= 0:
+		var nade_count = grenade_count
 		var nade_text = "%d" % nade_count
 		var nade_x = badge_x + badge_w + 4
 		var nade_col = Color8(255, 200, 80) if nade_count > 0 else Color8(160, 80, 80)

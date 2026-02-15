@@ -24,6 +24,9 @@ var hold_timer: float = 0.0  # How long button has been held
 const QUICK_TAP_THRESHOLD = 0.18  # Under this = quick tap, over = hold to open wheel
 var was_quick_tap: bool = false
 var last_weapon_mode: String = "melee"  # The previous weapon before current one
+var ranged_options: Array[String] = ["ak47"]
+var selected_ranged_index: int = 0
+var ranged_cycle_cooldown: float = 0.0
 
 # Bubble animation
 const OPEN_SPEED = 8.0
@@ -31,24 +34,29 @@ const CLOSE_SPEED = 10.0
 const BUBBLE_RADIUS = 75.0
 const SEGMENT_GAP = 0.06  # Gap between segments in radians
 
-func open(current_mode: String):
+func open(current_mode: String, owned_ranged: Array[String] = ["ak47"], equipped_ranged: String = "ak47"):
 	if is_open:
 		return
 	is_open = true
 	hold_timer = 0.0
 	was_quick_tap = false
+	ranged_cycle_cooldown = 0.0
 	previous_mode = current_mode
+	ranged_options = owned_ranged.duplicate()
+	if ranged_options.is_empty():
+		ranged_options = ["ak47"]
+	selected_ranged_index = maxi(0, ranged_options.find(equipped_ranged))
 	# Pre-select current category
 	for i in range(CATEGORIES.size()):
 		if CATEGORIES[i] == current_mode:
 			selected_index = i
 			break
 
-func close() -> String:
-	"""Close the wheel and return the selected weapon mode."""
+func close() -> Dictionary:
+	"""Close the wheel and return selected mode + sub-selection."""
 	is_open = false
 	confirm_flash = 0.4
-	return CATEGORIES[selected_index]
+	return {"mode": CATEGORIES[selected_index], "ranged_weapon": ranged_options[selected_ranged_index]}
 
 func quick_swap(current_mode: String) -> String:
 	"""Quick tap: swap to the last used weapon mode."""
@@ -66,6 +74,7 @@ func update(delta: float, aim_x: float, aim_y: float):
 	# Track hold duration when open
 	if is_open:
 		hold_timer += delta
+	ranged_cycle_cooldown = maxf(0.0, ranged_cycle_cooldown - delta)
 	# Animate open/close
 	if is_open:
 		open_timer = minf(open_timer + delta * OPEN_SPEED, 1.0)
@@ -86,6 +95,12 @@ func update(delta: float, aim_x: float, aim_y: float):
 			var seg = int(offset_angle / (TAU / 3.0))
 			seg = clampi(seg, 0, 2)
 			selected_index = seg
+			if selected_index == 1 and abs(aim_y) > 0.45 and ranged_options.size() > 1 and ranged_cycle_cooldown <= 0:
+				if aim_y < 0:
+					selected_ranged_index = (selected_ranged_index + 1) % ranged_options.size()
+				else:
+					selected_ranged_index = (selected_ranged_index - 1 + ranged_options.size()) % ranged_options.size()
+				ranged_cycle_cooldown = 0.18
 		# Also allow mouse movement for P1 (delta from center)
 
 func is_held_long_enough() -> bool:
@@ -207,6 +222,13 @@ func draw_wheel(canvas: CanvasItem, screen_pos: Vector2, player_has_grenades: bo
 		var label_size = int(9 * scale) if not is_selected else int(11 * scale)
 		var label_col = Color(0.15, 0.12, 0.2, icon_alpha * scale) if is_selected else Color(0.4, 0.35, 0.45, 0.45 * scale)
 		canvas.draw_string(font, label_pos, CATEGORY_LABELS[i], HORIZONTAL_ALIGNMENT_LEFT, -1, label_size, label_col)
+
+	if selected_index == 1 and not ranged_options.is_empty():
+		var font = ThemeDB.fallback_font
+		var selected_name = ranged_options[selected_ranged_index].replace("_", " ").to_upper()
+		canvas.draw_string(font, bubble_center + Vector2(-main_r * 0.7, main_r * 0.62), selected_name, HORIZONTAL_ALIGNMENT_LEFT, main_r * 1.4, int(10 * scale), Color8(50, 70, 95, int(220 * scale)))
+		if ranged_options.size() > 1:
+			canvas.draw_string(font, bubble_center + Vector2(-main_r * 0.5, main_r * 0.8), "UP/DOWN: CYCLE", HORIZONTAL_ALIGNMENT_LEFT, main_r, int(8 * scale), Color8(80, 90, 110, int(180 * scale)))
 
 	# --- CENTER DOT ---
 	canvas.draw_circle(bubble_center, 4.0 * scale, Color(0.3, 0.25, 0.35, 0.4 * scale))

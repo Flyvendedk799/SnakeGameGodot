@@ -71,6 +71,10 @@ func _draw():
 	if game == null or not visible:
 		return
 	var font = ThemeDB.fallback_font
+	var viewport_size = get_viewport_rect().size
+	var scale_x = viewport_size.x / 1280.0
+	var scale_y = viewport_size.y / 720.0
+	draw_set_transform(Vector2.ZERO, 0, Vector2(scale_x, scale_y))
 
 	# === TOP LEFT: HP panel ===
 	_draw_hp_panel(font)
@@ -108,6 +112,7 @@ func _draw():
 
 	# === Door interaction hint ===
 	_draw_door_hint(font)
+	draw_set_transform(Vector2.ZERO, 0, Vector2.ONE)
 
 # --- Rounded panel helper ---
 func _draw_rounded_panel(rect: Rect2, bg_color: Color, border_color: Color, radius: float = 6.0):
@@ -464,7 +469,7 @@ func _draw_weapon_wheels():
 		if p.is_dead:
 			continue
 		var screen_pos = _world_to_screen(p.position)
-		p.weapon_wheel.draw_wheel(self, screen_pos, p.has_grenades)
+		p.weapon_wheel.draw_wheel(self, screen_pos, p.has_grenades and p.grenade_count > 0)
 
 func _draw_minimap():
 	"""Draw a minimap in the bottom-left corner showing fort, player, and enemies."""

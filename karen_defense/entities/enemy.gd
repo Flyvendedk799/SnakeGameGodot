@@ -41,6 +41,10 @@ var dying_timer: float = 0.0
 var last_dir: Vector2 = Vector2.LEFT
 # Kill attribution: PlayerEntity who gets gold/XP (set by combat_system or ally when dealing damage)
 var last_damager = null
+var nav_waypoint: Vector2 = Vector2.ZERO
+var nav_repath_timer: float = 0.0
+var stuck_timer: float = 0.0
+var last_pos: Vector2 = Vector2.ZERO
 
 # Visual juice (Brotato-style)
 var squash_factor: float = 1.0
@@ -71,6 +75,7 @@ func initialize(type: String, stats: Dictionary):
 func update_enemy(delta: float, game):
 	hit_flash_timer = maxf(0, hit_flash_timer - delta)
 	attack_timer = maxf(0, attack_timer - delta)
+	nav_repath_timer = maxf(0, nav_repath_timer - delta)
 	anim_time += delta
 	_update_squash(delta)
 	_update_trail(delta)
@@ -201,31 +206,39 @@ func _state_chasing(delta, game):
 	if best_dist <= attack_range:
 		state = EnemyState.ATTACKING
 		return
-	var dir = (best_target.position - position)
+	var chase_point = _resolve_chase_point(best_target.position, game)
+	var dir = (chase_point - position)
 	if dir.length() > 1:
 		last_dir = dir.normalized()
-		# Slight random jitter to movement (prevents enemies from stacking perfectly)
-		var jitter = Vector2(sin(anim_time * 3.0 + position.x * 0.1) * 0.15, cos(anim_time * 3.0 + position.y * 0.1) * 0.15)
-		var move_dir = (dir.normalized() + jitter).normalized()
-
-		# Wall avoidance: if blocked, try sliding along walls
-		var desired_pos = position + move_dir * move_speed * delta
+		var desired_pos = position + dir.normalized() * move_speed * delta
 		var resolved_pos = game.map.resolve_collision(desired_pos, entity_size)
-		# If barely moved (stuck on wall), try perpendicular slide
 		if resolved_pos.distance_to(position) < move_speed * delta * 0.2:
-			var perp1 = Vector2(-dir.normalized().y, dir.normalized().x)
-			var alt1 = position + (dir.normalized() + perp1).normalized() * move_speed * delta
-			var alt2 = position + (dir.normalized() - perp1).normalized() * move_speed * delta
-			var res1 = game.map.resolve_collision(alt1, entity_size)
-			var res2 = game.map.resolve_collision(alt2, entity_size)
-			var d1 = res1.distance_to(best_target.position)
-			var d2 = res2.distance_to(best_target.position)
-			if d1 < d2:
-				position = res1
-			else:
-				position = res2
+			stuck_timer += delta
 		else:
-			position = resolved_pos
+			stuck_timer = 0.0
+		position = resolved_pos
+		if stuck_timer > 0.35:
+			nav_repath_timer = 0.0
+			stuck_timer = 0.0
+
+func _resolve_chase_point(target_pos: Vector2, game) -> Vector2:
+	if nav_repath_timer <= 0 or nav_waypoint == Vector2.ZERO or position.distance_to(nav_waypoint) < 22.0:
+		nav_waypoint = Vector2.ZERO
+		if not game.map.is_line_walkable(position, target_pos, entity_size):
+			var best = Vector2.ZERO
+			var best_score = INF
+			for wp in game.map.get_navigation_waypoints():
+				if not game.map.is_line_walkable(position, wp, entity_size):
+					continue
+				if not game.map.is_line_walkable(wp, target_pos, entity_size):
+					continue
+				var score = position.distance_to(wp) + wp.distance_to(target_pos)
+				if score < best_score:
+					best_score = score
+					best = wp
+			nav_waypoint = best
+		nav_repath_timer = 0.25
+	return nav_waypoint if nav_waypoint != Vector2.ZERO else target_pos
 
 func _state_attacking(_delta, game):
 	if chase_target == null or (chase_target is AllyEntity and chase_target.current_hp <= 0):

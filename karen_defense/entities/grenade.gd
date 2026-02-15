@@ -67,6 +67,10 @@ func update_grenade(delta: float, game) -> bool:
 
 func _explode(game):
 	has_exploded = true
+	if game.projectile_container:
+		var fx = ExplosionEffect.new()
+		fx.setup(target_pos, blast_radius)
+		game.projectile_container.add_child(fx)
 
 	# Area damage to all enemies in blast radius
 	for enemy in game.enemy_container.get_children():

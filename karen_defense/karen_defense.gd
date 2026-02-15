@@ -361,6 +361,7 @@ func _process_wave(delta):
 		player_node.update_player(delta, self)
 	if p2_joined and not player2_node.is_dead:
 		player2_node.update_player(delta, self)
+	_apply_player_tether(delta)
 	wave_director.update(delta)
 
 	for enemy in enemy_container.get_children():
@@ -373,6 +374,9 @@ func _process_wave(delta):
 				# Grenade exploded or finished, notify owner and remove
 				if proj.owner_player and is_instance_valid(proj.owner_player):
 					proj.owner_player.on_grenade_removed()
+				proj.queue_free()
+		elif proj is ExplosionEffect:
+			if proj.update_effect(delta):
 				proj.queue_free()
 		else:
 			proj.update_projectile(delta)
@@ -479,52 +483,77 @@ func start_wave():
 	if current_wave == max_waves and sfx:
 		sfx.play_boss_roar()
 
+
+func _apply_player_tether(delta: float):
+	if not p2_joined or player2_node == null or player_node.is_dead or player2_node.is_dead:
+		return
+	var max_dist = 760.0
+	var return_dist = 700.0
+	var vec = player2_node.position - player_node.position
+	var dist = vec.length()
+	if dist <= max_dist:
+		return
+	var dir = vec / maxf(dist, 0.001)
+	var overflow = dist - max_dist
+	var correction = minf(overflow * (8.0 * delta), overflow)
+	player_node.position += dir * correction * 0.5
+	player2_node.position -= dir * correction * 0.5
+	player_node.position = map.resolve_collision(player_node.position, player_node.BODY_RADIUS)
+	player2_node.position = map.resolve_collision(player2_node.position, player2_node.BODY_RADIUS)
+	if overflow > (max_dist - return_dist) and int(Time.get_ticks_msec() / 220) % 2 == 0:
+		spawn_damage_number((player_node.position + player2_node.position) * 0.5, "TOO FAR APART", Color8(255, 170, 90))
 func _update_camera_follow(delta: float):
-	var target = map.get_fort_center()
+	var points: Array[Vector2] = []
 	if not player_node.is_dead:
-		target = player_node.position
-		# Directional lead: camera leads in movement direction (bigger lead on big maps)
-		if player_node.is_moving:
-			target += player_node.last_move_dir * 60.0
-	# Two-player camera: center between both, with averaged directional lead
+		points.append(player_node.position)
 	if p2_joined and player2_node and not player2_node.is_dead:
-		if not player_node.is_dead:
-			target = (player_node.position + player2_node.position) / 2.0
-			# Lead in the direction of each player's movement
-			if player_node.is_moving:
-				target += player_node.last_move_dir * 30.0
-			if player2_node.is_moving:
-				target += player2_node.last_move_dir * 30.0
-		else:
-			target = player2_node.position
-			if player2_node.is_moving:
-				target += player2_node.last_move_dir * 60.0
-	elif player_node.is_dead and p2_joined and player2_node:
-		target = player2_node.position
-	# Clamp accounting for zoom level so camera doesn't show out-of-bounds
-	var current_zoom = game_camera.zoom.x
-	var half_w = (SCREEN_W / 2.0) / maxf(current_zoom, 0.1)
-	var half_h = (SCREEN_H / 2.0) / maxf(current_zoom, 0.1)
-	target.x = clampf(target.x, half_w, map.SCREEN_W - half_w)
-	target.y = clampf(target.y, half_h, map.SCREEN_H - half_h)
-	game_camera.position = game_camera.position.lerp(target, delta * 6.0)
-	# Camera zoom juice
+		points.append(player2_node.position)
+	if points.is_empty():
+		points.append(map.get_fort_center())
+
+	var min_x = points[0].x
+	var max_x = points[0].x
+	var min_y = points[0].y
+	var max_y = points[0].y
+	for p in points:
+		min_x = minf(min_x, p.x)
+		max_x = maxf(max_x, p.x)
+		min_y = minf(min_y, p.y)
+		max_y = maxf(max_y, p.y)
+
+	var target = Vector2((min_x + max_x) * 0.5, (min_y + max_y) * 0.5)
+	if points.size() == 1:
+		if not player_node.is_dead and player_node.is_moving:
+			target += player_node.last_move_dir * 60.0
+		elif p2_joined and player2_node and player2_node.is_moving:
+			target += player2_node.last_move_dir * 60.0
+
 	camera_zoom_punch = lerpf(camera_zoom_punch, 0.0, delta * 5.0)
 	var enemy_count = enemy_container.get_child_count()
 	var dynamic_zoom_offset = clampf(float(enemy_count) / 50.0, 0.0, 0.15)
 	var target_zoom = camera_base_zoom - dynamic_zoom_offset - camera_zoom_punch
-	# Smart zoom-out when two players are far apart: keep both in view
-	if p2_joined and player2_node and not player_node.is_dead and not player2_node.is_dead:
-		var p_dist = player_node.position.distance_to(player2_node.position)
-		# Calculate zoom needed to fit both players on screen with comfortable padding
-		var needed_w = p_dist * 1.3 + 250.0
-		var needed_h = p_dist * 0.9 + 250.0
-		var zoom_for_w = SCREEN_W / maxf(needed_w, 1.0)
-		var zoom_for_h = SCREEN_H / maxf(needed_h, 1.0)
+
+	if points.size() > 1:
+		var viewport_size = get_viewport_rect().size
+		var pad_x = 260.0
+		var pad_y = 220.0
+		var needed_w = (max_x - min_x) + pad_x
+		var needed_h = (max_y - min_y) + pad_y
+		var zoom_for_w = viewport_size.x / maxf(needed_w, 1.0)
+		var zoom_for_h = viewport_size.y / maxf(needed_h, 1.0)
 		var zoom_for_dist = minf(zoom_for_w, zoom_for_h)
-		zoom_for_dist = clampf(zoom_for_dist, 0.35, camera_base_zoom)
 		target_zoom = minf(target_zoom, zoom_for_dist)
-	game_camera.zoom = game_camera.zoom.lerp(Vector2(target_zoom, target_zoom), delta * 4.0)
+
+	target_zoom = clampf(target_zoom, 0.33, camera_base_zoom)
+	game_camera.zoom = game_camera.zoom.lerp(Vector2(target_zoom, target_zoom), delta * 4.2)
+
+	var current_zoom = game_camera.zoom.x
+	var viewport = get_viewport_rect().size
+	var half_w = (viewport.x / 2.0) / maxf(current_zoom, 0.1)
+	var half_h = (viewport.y / 2.0) / maxf(current_zoom, 0.1)
+	target.x = clampf(target.x, half_w, map.SCREEN_W - half_w)
+	target.y = clampf(target.y, half_h, map.SCREEN_H - half_h)
+	game_camera.position = game_camera.position.lerp(target, delta * 6.0)
 
 func _apply_wave_damage_scaling():
 	# +3% melee and ranged damage per wave (applied on top of current stats)
