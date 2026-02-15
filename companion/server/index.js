@@ -30,6 +30,7 @@ const CREATE_WINDOW_MS = 60 * 1000;
 const CREATE_MAX_PER_IP = 6;
 const CREATE_MAX_ACTIVE_SESSIONS_PER_IP = 4;
 const MAX_POINT_LIST_ITEMS = 256;
+const RECONNECT_GRACE_MS = 30 * 1000;
 
 const createAttemptsByIp = new Map();
 
@@ -277,7 +278,8 @@ app.get('/session/create', (req, res) => {
     comboLevel: 0,
     comboUpdatedAt: Date.now(),
     comboStats: { markStrike: 0, supplyChain: 0, empFollowup: 0 },
-    ownerIp: ip
+    ownerIp: ip,
+    emptySince: null
   });
   res.json({ code, token });
 });
@@ -498,6 +500,7 @@ wss.on('connection', (ws) => {
         ws.role = msg.role === 'game' ? 'game' : msg.role === 'companion' ? 'companion' : null;
         ws.code = code;
         sessionRecordMessage(s, t, now);
+        s.emptySince = null;
         if (ws.role === 'game') s.game = ws;
         else if (ws.role === 'companion') {
           s.companion = ws;
@@ -538,6 +541,7 @@ wss.on('connection', (ws) => {
         ws.role = msg.role === 'game' ? 'game' : msg.role === 'companion' ? 'companion' : null;
         ws.code = foundCode;
         sessionRecordMessage(foundSession, t, now);
+        foundSession.emptySince = null;
         if (ws.role === 'game') foundSession.game = ws;
         else if (ws.role === 'companion') {
           foundSession.companion = ws;
@@ -731,7 +735,7 @@ wss.on('connection', (ws) => {
       if (s) {
         if (ws.role === 'game') s.game = null;
         else if (ws.role === 'companion') s.companion = null;
-        if (!s.game && !s.companion) sessions.delete(ws.code);
+        if (!s.game && !s.companion) s.emptySince = Date.now();
       }
     }
   });
@@ -751,6 +755,10 @@ const expiryInterval = setInterval(() => {
     if (now - s.createdAt > SESSION_EXPIRY_MS) {
       if (s.game) s.game.terminate?.();
       if (s.companion) s.companion.terminate?.();
+      sessions.delete(code);
+      continue;
+    }
+    if (!s.game && !s.companion && s.emptySince && (now - s.emptySince > RECONNECT_GRACE_MS)) {
       sessions.delete(code);
     }
   }
