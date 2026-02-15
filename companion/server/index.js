@@ -380,11 +380,23 @@ wss.on('connection', (ws) => {
           s.radarsThisWave = 0;
           if (s.companion) safeSend(s.companion, { type: 'new_wave' });
         }
-      } else if (t === 'minimap' && ws.role === 'game' && ws.code) {
+      } else if ((t === 'minimap_full' || t === 'minimap_delta') && ws.role === 'game' && ws.code) {
         const s = sessions.get(ws.code);
         if (s && s.companion) {
           sessionRecordMessage(s, t, now);
-          const fwd = { type: 'minimap', enemies: msg.enemies || [], allies: msg.allies || [], players: msg.players || [], wave: msg.wave, state: msg.state, chopper: msg.chopper };
+          const fwd = {
+            type: t,
+            v: msg.v,
+            seq: msg.seq,
+            base_seq: msg.base_seq,
+            wave: msg.wave,
+            state: msg.state,
+            enemies: msg.enemies || [],
+            allies: msg.allies || [],
+            players: msg.players || []
+          };
+          if (msg.chopper) fwd.chopper = msg.chopper;
+          if (msg.chopper_removed) fwd.chopper_removed = true;
           relayWithTiming(s.companion, fwd, ingressAt, s);
         }
       } else if (t === 'bomb_impact' && ws.role === 'game' && ws.code) {

@@ -264,15 +264,23 @@ style.textContent = `
 `;
 document.head.appendChild(style);
 
-let minimapData = { enemies: [], allies: [], players: [] };
+const MINIMAP_PROTOCOL_VERSION = 1;
+const MINIMAP_QUANT_MAX = 1023;
+
+let minimapData = { enemies: [], allies: [], players: [], chopper: null };
+let minimapStore = {
+  enemies: new Map(),
+  allies: new Map(),
+  players: new Map(),
+  chopper: null
+};
+let lastMinimapSeq = 0;
+let waitingForFullSnapshot = true;
 
 // Joystick state for helicopter control
 let joystickActive = false;
 let joystickLastSent = 0;
 let impactFlash = null;
-// Smooth interpolation for entity positions
-let prevMinimapData = { enemies: [], allies: [], players: [] };
-let minimapLerpT = 0;
 
 const abilityInfo = {
   bomb: { cooldownMs: COOLDOWN_BOMB_MS, maxPerWave: BOMBS_PER_WAVE, hint: 'Tap map to drop bomb', needsTap: true },
@@ -331,7 +339,7 @@ function setupWsHandlers(socket) {
       hideError();
       bombsRemaining = BOMBS_PER_WAVE;
       suppliesRemaining = SUPPLIES_PER_WAVE;
-      minimapData = { enemies: [], allies: [], players: [] };
+      resetMinimapState();
       waiting.classList.add('hidden');
       connected.classList.remove('hidden');
       updateConnectionBadge();
@@ -374,19 +382,18 @@ function setupWsHandlers(socket) {
       empsRemaining = EMP_PER_WAVE;
       stats.wavesAssisted++;
       saveStats();
-    } else if (m.type === 'minimap') {
+    } else if (m.type === 'minimap_full') {
       const now = Date.now();
       if (lastMinimapPacketAt > 0 && (now - lastMinimapPacketAt) > 450) packetGapCount++;
       lastMinimapPacketAt = now;
-      prevMinimapData = minimapData;
-      minimapData = {
-        enemies: Array.isArray(m.enemies) ? m.enemies : [],
-        allies: Array.isArray(m.allies) ? m.allies : [],
-        players: Array.isArray(m.players) ? m.players : [],
-        chopper: Array.isArray(m.chopper) ? m.chopper : null
-      };
-      minimapLerpT = 0; // Reset lerp for smooth transition
-      // Extract wave and state if present
+      applyMinimapFull(m);
+      if (typeof m.wave === 'number') currentWave = m.wave;
+      if (typeof m.state === 'string') gameState = m.state;
+    } else if (m.type === 'minimap_delta') {
+      const now = Date.now();
+      if (lastMinimapPacketAt > 0 && (now - lastMinimapPacketAt) > 450) packetGapCount++;
+      lastMinimapPacketAt = now;
+      applyMinimapDelta(m);
       if (typeof m.wave === 'number') currentWave = m.wave;
       if (typeof m.state === 'string') gameState = m.state;
     } else if (m.type === 'bomb_impact') {
@@ -530,6 +537,100 @@ function getCooldownRemaining(ability) {
   return Math.max(0, info.cooldownMs - (Date.now() - lastAt));
 }
 
+
+function resetMinimapState() {
+  minimapStore = {
+    enemies: new Map(),
+    allies: new Map(),
+    players: new Map(),
+    chopper: null
+  };
+  minimapData = { enemies: [], allies: [], players: [], chopper: null };
+  lastMinimapSeq = 0;
+  waitingForFullSnapshot = true;
+}
+
+function dequantizeCoord(v) {
+  return Math.max(0, Math.min(1, Number(v) / MINIMAP_QUANT_MAX));
+}
+
+function decodeEntity(entry, includeBoss = false) {
+  if (!entry || typeof entry !== 'object') return null;
+  const id = typeof entry.id === 'string' ? entry.id : '';
+  if (!id) return null;
+  const out = [dequantizeCoord(entry.x), dequantizeCoord(entry.y)];
+  if (includeBoss) out.push(entry.boss === true);
+  return { id, value: out };
+}
+
+function rebuildMinimapDataFromStore() {
+  minimapData = {
+    enemies: Array.from(minimapStore.enemies.values()),
+    allies: Array.from(minimapStore.allies.values()),
+    players: Array.from(minimapStore.players.values()),
+    chopper: minimapStore.chopper
+  };
+}
+
+function applyFullGroup(targetMap, entries, includeBoss = false) {
+  targetMap.clear();
+  if (!Array.isArray(entries)) return;
+  for (const entry of entries) {
+    const decoded = decodeEntity(entry, includeBoss);
+    if (!decoded) continue;
+    targetMap.set(decoded.id, decoded.value);
+  }
+}
+
+function applyDeltaGroup(targetMap, delta, includeBoss = false) {
+  if (!delta || typeof delta !== 'object') return;
+  if (Array.isArray(delta.upserts)) {
+    for (const entry of delta.upserts) {
+      const decoded = decodeEntity(entry, includeBoss);
+      if (!decoded) continue;
+      targetMap.set(decoded.id, decoded.value);
+    }
+  }
+  if (Array.isArray(delta.removed)) {
+    for (const id of delta.removed) {
+      if (typeof id === 'string') targetMap.delete(id);
+    }
+  }
+}
+
+function applyMinimapFull(message) {
+  if (Number(message.v) !== MINIMAP_PROTOCOL_VERSION) return;
+  applyFullGroup(minimapStore.enemies, message.enemies, true);
+  applyFullGroup(minimapStore.allies, message.allies, false);
+  applyFullGroup(minimapStore.players, message.players, false);
+  minimapStore.chopper = decodeEntity(message.chopper, false)?.value ?? null;
+  lastMinimapSeq = Number(message.seq) || 0;
+  waitingForFullSnapshot = false;
+  rebuildMinimapDataFromStore();
+}
+
+function applyMinimapDelta(message) {
+  if (Number(message.v) !== MINIMAP_PROTOCOL_VERSION) return;
+  const seq = Number(message.seq);
+  const baseSeq = Number(message.base_seq);
+  if (waitingForFullSnapshot || !Number.isFinite(seq) || !Number.isFinite(baseSeq) || baseSeq !== lastMinimapSeq || seq !== lastMinimapSeq + 1) {
+    waitingForFullSnapshot = true;
+    return;
+  }
+
+  applyDeltaGroup(minimapStore.enemies, message.enemies, true);
+  applyDeltaGroup(minimapStore.allies, message.allies, false);
+  applyDeltaGroup(minimapStore.players, message.players, false);
+  if (message.chopper_removed === true) {
+    minimapStore.chopper = null;
+  } else if (message.chopper && typeof message.chopper === 'object') {
+    minimapStore.chopper = decodeEntity(message.chopper, false)?.value ?? minimapStore.chopper;
+  }
+
+  lastMinimapSeq = seq;
+  rebuildMinimapDataFromStore();
+}
+
 function drawMinimap() {
   const c = minimap.getContext('2d');
   const inner = MM_SIZE - PAD * 2;
@@ -554,20 +655,12 @@ function drawMinimap() {
   c.lineWidth = 1.0;
   c.strokeRect(PAD + inner * 0.35, PAD + inner * 0.35, inner * 0.3, inner * 0.3);
 
-  // Smooth lerp (reduces jitter); cap at 50 enemies on mobile for perf
+  // Draw from keyed entity store snapshots; cap at 50 enemies on mobile for perf
   const enemyCap = window.innerWidth < 768 ? 50 : 80;
-  minimapLerpT = Math.min(minimapLerpT + 0.65, 1.0);
   const pulsePhase = radarRevealActive ? Math.sin(Date.now() / 200) * 1.5 : 0;
   for (let i = 0; i < Math.min(minimapData.enemies.length, enemyCap); i++) {
     const e = minimapData.enemies[i];
-    let px, py;
-    if (i < prevMinimapData.enemies.length && minimapLerpT < 1.0) {
-      const prev = prevMinimapData.enemies[i];
-      px = PAD + (prev[0] + (e[0] - prev[0]) * minimapLerpT) * inner;
-      py = PAD + (prev[1] + (e[1] - prev[1]) * minimapLerpT) * inner;
-    } else {
-      [px, py] = toPx(e[0], e[1]);
-    }
+    const [px, py] = toPx(e[0], e[1]);
     const isBoss = e.length > 2 && e[2] === true;
     const dotSize = isBoss ? 3 : 1.5;
     c.fillStyle = isBoss ? '#ff2828' : 'rgba(255, 80, 80, 0.95)';
@@ -597,14 +690,7 @@ function drawMinimap() {
     c.fill();
   }
   if (minimapData.chopper) {
-    let cx, cy;
-    if (prevMinimapData.chopper && minimapLerpT < 1.0) {
-      cx = prevMinimapData.chopper[0] + (minimapData.chopper[0] - prevMinimapData.chopper[0]) * minimapLerpT;
-      cy = prevMinimapData.chopper[1] + (minimapData.chopper[1] - prevMinimapData.chopper[1]) * minimapLerpT;
-    } else {
-      [cx, cy] = minimapData.chopper;
-    }
-    const [px, py] = toPx(cx, cy);
+    const [px, py] = toPx(minimapData.chopper[0], minimapData.chopper[1]);
     c.fillStyle = 'rgba(200, 180, 80, 1)';
     c.strokeStyle = 'rgba(255, 220, 100, 0.9)';
     c.lineWidth = 1.5;
