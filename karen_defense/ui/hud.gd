@@ -112,6 +112,9 @@ func _draw():
 	# === Minimap ===
 	_draw_minimap()
 
+	# === Companion action notification ===
+	_draw_companion_action(font)
+
 	# === Contextual barrier repair hint ===
 	_draw_barrier_hint(font)
 
@@ -431,6 +434,15 @@ func _draw_join_prompt(font: Font):
 		var join_alpha = 0.4 + 0.2 * sin(anim_time * 2.0)
 		_draw_rounded_panel(Rect2(390, 690, 500, 24), Color(0, 0, 0, join_alpha), Color(0.5, 0.5, 0.6, join_alpha * 0.3), 4.0)
 		draw_string(font, Vector2(390, 708), "Player 2: Press Cross on controller to join!", HORIZONTAL_ALIGNMENT_CENTER, 500, 12, Color(0.7, 0.7, 0.78, join_alpha + 0.3))
+
+func _draw_companion_action(font: Font):
+	if game.companion_action_timer <= 0 or game.companion_action_text.is_empty():
+		return
+	var alpha = clampf(game.companion_action_timer / 0.5, 0.0, 1.0)
+	var cx = 640.0
+	var cy = 86.0
+	_draw_rounded_panel(Rect2(cx - 160, cy - 16, 320, 32), Color(0.15, 0.08, 0.2, 0.9 * alpha), Color(0.6, 0.4, 0.9, 0.5 * alpha), 6.0)
+	draw_string(font, Vector2(cx - 160, cy + 4), game.companion_action_text, HORIZONTAL_ALIGNMENT_CENTER, 320, 14, Color(0.9, 0.8, 1.0, alpha))
 
 func _draw_hints(font: Font):
 	if hint_reveal <= 0.01:

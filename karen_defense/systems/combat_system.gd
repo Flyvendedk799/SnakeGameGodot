@@ -85,6 +85,9 @@ func _check_projectile_hits():
 		# Skip explosion visuals (no source/damage)
 		if proj is ExplosionEffect:
 			continue
+		# Skip companion entities (no source property)
+		if proj is HelicopterBombEntity or proj is SupplyDropEntity:
+			continue
 		if proj.source == "player":
 			for enemy in game.enemy_container.get_children():
 				if enemy.state == EnemyEntity.EnemyState.DEAD or enemy.state == EnemyEntity.EnemyState.DYING:

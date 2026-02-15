@@ -106,6 +106,10 @@ var ally_target_counts: Dictionary = {}
 var _companion_minimap_timer: float = 0.0
 const COMPANION_MINIMAP_INTERVAL: float = 0.15
 
+# Companion action HUD notification (text + timer)
+var companion_action_text: String = ""
+var companion_action_timer: float = 0.0
+
 func _ready():
 	particles = ParticleSystem.new()
 	_build_scene_tree()
@@ -316,6 +320,8 @@ func _process(delta):
 		_update_camera_follow(delta)
 	if wave_announce_timer > 0:
 		wave_announce_timer -= delta
+	if companion_action_timer > 0:
+		companion_action_timer -= delta
 	# Update chromatic aberration
 	if chromatic_intensity > 0.05:
 		chromatic_intensity = lerpf(chromatic_intensity, 0.0, delta * 8.0)
@@ -329,6 +335,28 @@ func _process(delta):
 	# Update map animation time
 	if state == GameState.WAVE_ACTIVE or state == GameState.BETWEEN_WAVES:
 		map.anim_time += delta
+		# Send minimap to companion (real-time, throttled)
+		if companion_session and companion_session.is_session_connected():
+			_companion_minimap_timer -= delta
+			if _companion_minimap_timer <= 0:
+				_companion_minimap_timer = COMPANION_MINIMAP_INTERVAL
+				var m = map
+				var w = maxf(m.SCREEN_W, 1.0)
+				var h = maxf(m.SCREEN_H, 1.0)
+				var enemies_arr: Array = []
+				for e in enemy_container.get_children():
+					if e.state in [EnemyEntity.EnemyState.DEAD, EnemyEntity.EnemyState.DYING]: continue
+					enemies_arr.append([e.position.x / w, e.position.y / h])
+				var allies_arr: Array = []
+				for a in ally_container.get_children():
+					if a.current_hp <= 0: continue
+					allies_arr.append([a.position.x / w, a.position.y / h])
+				var players_arr: Array = []
+				if not player_node.is_dead:
+					players_arr.append([player_node.position.x / w, player_node.position.y / h])
+				if p2_joined and player2_node and not player2_node.is_dead:
+					players_arr.append([player2_node.position.x / w, player2_node.position.y / h])
+				companion_session.send_minimap(enemies_arr, allies_arr, players_arr)
 
 	_update_visibility()
 	if state != GameState.WORLD_SELECT:
@@ -410,29 +438,6 @@ func _process_wave(delta):
 	if helicopter_entity and is_instance_valid(helicopter_entity):
 		if helicopter_entity.update_helicopter(delta):
 			helicopter_entity = null
-
-	# Send minimap data to companion (throttled)
-	if companion_session and companion_session.is_session_connected():
-		_companion_minimap_timer -= delta
-		if _companion_minimap_timer <= 0:
-			_companion_minimap_timer = COMPANION_MINIMAP_INTERVAL
-			var m = map
-			var w = maxf(m.SCREEN_W, 1.0)
-			var h = maxf(m.SCREEN_H, 1.0)
-			var enemies_arr: Array = []
-			for e in enemy_container.get_children():
-				if e.state in [EnemyEntity.EnemyState.DEAD, EnemyEntity.EnemyState.DYING]: continue
-				enemies_arr.append([e.position.x / w, e.position.y / h])
-			var allies_arr: Array = []
-			for a in ally_container.get_children():
-				if a.current_hp <= 0: continue
-				allies_arr.append([a.position.x / w, a.position.y / h])
-			var players_arr: Array = []
-			if not player_node.is_dead:
-				players_arr.append([player_node.position.x / w, player_node.position.y / h])
-			if p2_joined and player2_node and not player2_node.is_dead:
-				players_arr.append([player2_node.position.x / w, player2_node.position.y / h])
-			companion_session.send_minimap(enemies_arr, allies_arr, players_arr)
 
 	combat_system.resolve_frame(delta)
 	particles.update(delta)
@@ -539,6 +544,8 @@ func start_wave():
 
 func _on_companion_bomb_drop(x: float, y: float):
 	if state != GameState.WAVE_ACTIVE or wave_complete_pending: return
+	companion_action_text = "Companion: Bomb inbound!"
+	companion_action_timer = 2.5
 	var map = self.map
 	var wx = map.FORT_LEFT + x * (map.FORT_RIGHT - map.FORT_LEFT)
 	var wy = map.FORT_TOP + y * (map.FORT_BOTTOM - map.FORT_TOP)
@@ -551,6 +558,8 @@ func _on_companion_bomb_drop(x: float, y: float):
 
 func _on_companion_supply_drop(x: float, y: float):
 	if state != GameState.WAVE_ACTIVE or wave_complete_pending: return
+	companion_action_text = "Companion: Supply drop incoming!"
+	companion_action_timer = 2.5
 	var map = self.map
 	var wx = map.FORT_LEFT + x * (map.FORT_RIGHT - map.FORT_LEFT)
 	var wy = map.FORT_TOP + y * (map.FORT_BOTTOM - map.FORT_TOP)
@@ -559,6 +568,8 @@ func _on_companion_supply_drop(x: float, y: float):
 	projectile_container.add_child(supply)
 
 func _on_companion_bomb_landed(pos: Vector2, kills: int):
+	companion_action_text = "Companion bomb: %d kills!" % kills if kills > 0 else "Companion bomb landed!"
+	companion_action_timer = 2.0
 	if companion_session:
 		var m = map
 		var nx = (pos.x - m.FORT_LEFT) / maxf(m.FORT_RIGHT - m.FORT_LEFT, 1.0)
@@ -566,6 +577,8 @@ func _on_companion_bomb_landed(pos: Vector2, kills: int):
 		companion_session.send_bomb_impact(nx, ny, kills)
 
 func _on_companion_supply_landed(pos: Vector2):
+	companion_action_text = "Companion supply: Repairs + gold!"
+	companion_action_timer = 2.0
 	if companion_session:
 		var m = map
 		var nx = (pos.x - m.FORT_LEFT) / maxf(m.FORT_RIGHT - m.FORT_LEFT, 1.0)
