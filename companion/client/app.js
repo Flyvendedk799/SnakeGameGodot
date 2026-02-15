@@ -31,7 +31,7 @@ const RADAR_PER_WAVE = 1;
 const EMP_PER_WAVE = 1;
 const MM_SIZE = 300;
 const PAD = 10;
-const CHOPPER_INPUT_THROTTLE_MS = 80;  // ~12 Hz
+const CHOPPER_INPUT_THROTTLE_MS = 50;  // ~20 Hz for snappier chopper control
 
 let ws = null, sessionCode = null, reconnectToken = null;
 let lastBombAt = 0, lastSupplyAt = 0, lastRadarAt = 0, lastEmpAt = 0;
@@ -527,7 +527,7 @@ function drawMinimap() {
 
   // Smooth lerp (reduces jitter); cap at 50 enemies on mobile for perf
   const enemyCap = window.innerWidth < 768 ? 50 : 80;
-  minimapLerpT = Math.min(minimapLerpT + 0.4, 1.0);
+  minimapLerpT = Math.min(minimapLerpT + 0.65, 1.0);
   const pulsePhase = radarRevealActive ? Math.sin(Date.now() / 200) * 1.5 : 0;
   for (let i = 0; i < Math.min(minimapData.enemies.length, enemyCap); i++) {
     const e = minimapData.enemies[i];
@@ -568,7 +568,14 @@ function drawMinimap() {
     c.fill();
   }
   if (minimapData.chopper) {
-    const [px, py] = toPx(minimapData.chopper[0], minimapData.chopper[1]);
+    let cx, cy;
+    if (prevMinimapData.chopper && minimapLerpT < 1.0) {
+      cx = prevMinimapData.chopper[0] + (minimapData.chopper[0] - prevMinimapData.chopper[0]) * minimapLerpT;
+      cy = prevMinimapData.chopper[1] + (minimapData.chopper[1] - prevMinimapData.chopper[1]) * minimapLerpT;
+    } else {
+      [cx, cy] = minimapData.chopper;
+    }
+    const [px, py] = toPx(cx, cy);
     c.fillStyle = 'rgba(200, 180, 80, 1)';
     c.strokeStyle = 'rgba(255, 220, 100, 0.9)';
     c.lineWidth = 1.5;
@@ -877,7 +884,7 @@ setInterval(() => {
 
 // Throttle draw to 30fps on mobile for less lag and battery
 let lastDrawTime = 0;
-const DRAW_INTERVAL_MS = 33;
+const DRAW_INTERVAL_MS = 16;  // 60fps for real-time minimap
 function tick(now) {
   const t = typeof now === 'number' ? now : performance.now();
   if (connected.classList.contains('hidden') === false) {

@@ -110,7 +110,7 @@ var radar_reveal_timer: float = 0.0
 
 # Companion minimap broadcast throttle
 var _companion_minimap_timer: float = 0.0
-const COMPANION_MINIMAP_INTERVAL: float = 0.1  # 10Hz for snappier real-time feel
+const COMPANION_MINIMAP_INTERVAL: float = 0.05  # 20Hz for real-time minimap/chopper
 
 # Companion action HUD notification (array of {text, timer})
 var companion_action_feed: Array = []
