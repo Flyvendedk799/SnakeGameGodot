@@ -265,8 +265,7 @@ var landing_target_squash: float = 1.0
 var jump_state: String = "none"  # "anticipation", "launch", "apex", "fall"
 var jump_phase_timer: float = 0.0
 var jump_queued: bool = false  # Queue jump during anticipation
-var melee_attack_phase: String = "none"  # "anticipation", "strike", "recovery"
-var melee_phase_timer: float = 0.0
+# Note: melee_attack_phase and melee_phase_timer already declared at lines 57-58
 
 func _ready():
 	if player_index == 1:
