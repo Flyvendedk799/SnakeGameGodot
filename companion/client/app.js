@@ -40,6 +40,8 @@ let selectedAbility = 'bomb';
 let gameState = 'wave_active';
 let currentWave = 0;
 let radarRevealActive = false;
+let colorblindMode = false;
+let highContrastMode = false;
 
 // Connection quality
 let latencyMs = 0;
@@ -144,7 +146,52 @@ function playSoundEffect(type) {
 try {
   const savedSound = localStorage.getItem('companion_sound');
   if (savedSound !== null) soundEnabled = savedSound === 'true';
+  const savedColorblind = localStorage.getItem('companion_colorblind_mode');
+  if (savedColorblind !== null) colorblindMode = savedColorblind === 'true';
+  const savedContrast = localStorage.getItem('companion_high_contrast_mode');
+  if (savedContrast !== null) highContrastMode = savedContrast === 'true';
 } catch (_) { /* ignore */ }
+
+function updateAccessibilityModes() {
+  document.body.classList.toggle('cb-safe', colorblindMode);
+  document.body.classList.toggle('high-contrast', highContrastMode);
+}
+
+function installDisplayToggles() {
+  const buttonRow = btnStats.parentElement;
+  if (!buttonRow) return;
+  const btnColorblind = document.createElement('button');
+  btnColorblind.id = 'btnColorblind';
+  btnColorblind.className = 'view-toggle';
+  const btnContrast = document.createElement('button');
+  btnContrast.id = 'btnContrast';
+  btnContrast.className = 'view-toggle';
+  buttonRow.appendChild(btnColorblind);
+  buttonRow.appendChild(btnContrast);
+
+  const refreshText = () => {
+    btnColorblind.textContent = colorblindMode ? 'Palette: Safe' : 'Palette: Default';
+    btnContrast.textContent = highContrastMode ? 'Contrast: High' : 'Contrast: Standard';
+  };
+
+  btnColorblind.onclick = () => {
+    colorblindMode = !colorblindMode;
+    refreshText();
+    updateAccessibilityModes();
+    try { localStorage.setItem('companion_colorblind_mode', String(colorblindMode)); } catch (_) { /* ignore */ }
+  };
+  btnContrast.onclick = () => {
+    highContrastMode = !highContrastMode;
+    refreshText();
+    updateAccessibilityModes();
+    try { localStorage.setItem('companion_high_contrast_mode', String(highContrastMode)); } catch (_) { /* ignore */ }
+  };
+
+  refreshText();
+}
+
+updateAccessibilityModes();
+installDisplayToggles();
 
 // Tutorial system
 const tutorialOverlay = document.getElementById('tutorialOverlay');
@@ -267,6 +314,51 @@ let impactFlash = null;
 // Smooth interpolation for entity positions
 let prevMinimapData = { enemies: [], allies: [], players: [] };
 let minimapLerpT = 0;
+const minimapCtx = minimap.getContext('2d', { alpha: false });
+const minimapGradients = { impactBomb: null, impactSupply: null, tracer: null };
+const minimapTmp = { px: 0, py: 0 };
+const declutterBins = new Map();
+
+const THREAT_TIER = {
+  BOSS: 'boss',
+  ELITE: 'elite',
+  NEAR_FORT: 'near_fort',
+  NORMAL: 'normal'
+};
+
+const threatGlyphs = {
+  boss: '◆',
+  elite: '▲',
+  near_fort: '■',
+  normal: '•'
+};
+
+const palettes = {
+  default: {
+    bg: '#1a1520',
+    border: '#4a3f6a',
+    enemy: 'rgba(255, 80, 80, 0.95)',
+    enemyNearFort: 'rgba(255, 160, 90, 0.95)',
+    elite: 'rgba(255, 210, 120, 0.95)',
+    boss: '#ff3030',
+    ally: 'rgba(80, 160, 255, 0.9)',
+    player: 'rgba(80, 255, 120, 1)',
+    chopperFill: 'rgba(200, 180, 80, 1)',
+    chopperStroke: 'rgba(255, 220, 100, 0.9)'
+  },
+  colorblind: {
+    bg: '#171a24',
+    border: '#5b6b8f',
+    enemy: 'rgba(227, 120, 255, 0.95)',
+    enemyNearFort: 'rgba(255, 189, 89, 0.98)',
+    elite: 'rgba(250, 235, 120, 0.98)',
+    boss: '#ff6d7a',
+    ally: 'rgba(64, 190, 255, 0.95)',
+    player: 'rgba(120, 255, 180, 1)',
+    chopperFill: 'rgba(190, 210, 255, 1)',
+    chopperStroke: 'rgba(225, 240, 255, 0.95)'
+  }
+};
 
 const abilityInfo = {
   bomb: { cooldownMs: COOLDOWN_BOMB_MS, maxPerWave: BOMBS_PER_WAVE, hint: 'Tap map to drop bomb', needsTap: true },
@@ -375,7 +467,7 @@ function setupWsHandlers(socket) {
       }
       saveStats();
       playSoundEffect(isMega ? 'mega' : 'impact');
-      impactFlash = { x: m.x, y: m.y, kills, type: 'bomb', at: Date.now(), mega: isMega };
+      impactFlash = { x: m.x, y: m.y, kills, type: 'bomb', at: Date.now(), mega: isMega, from: minimapData.chopper ? [minimapData.chopper[0], minimapData.chopper[1]] : null };
       if (navigator.vibrate) {
         if (isMega) {
           // Stronger haptic pattern for mega strike
@@ -386,7 +478,7 @@ function setupWsHandlers(socket) {
       }
     } else if (m.type === 'supply_impact') {
       addToHistory('📦', 'Supply delivered', 'Team supported!');
-      impactFlash = { x: m.x, y: m.y, type: 'supply', at: Date.now() };
+      impactFlash = { x: m.x, y: m.y, type: 'supply', at: Date.now(), from: minimapData.chopper ? [minimapData.chopper[0], minimapData.chopper[1]] : null };
       playSoundEffect('supply');
     } else if (m.type === 'game_state') {
       gameState = m.state || 'wave_active';
@@ -501,72 +593,139 @@ function getCooldownRemaining(ability) {
   return Math.max(0, info.cooldownMs - (Date.now() - lastAt));
 }
 
+function getThreatTier(enemy) {
+  const isBoss = enemy.length > 2 && enemy[2] === true;
+  const isElite = enemy.length > 3 && enemy[3] === true;
+  const nearFort = enemy[0] > 0.1 && enemy[0] < 0.9 && enemy[1] > 0.05 && enemy[1] < 0.75;
+  if (isBoss) return THREAT_TIER.BOSS;
+  if (isElite) return THREAT_TIER.ELITE;
+  if (nearFort) return THREAT_TIER.NEAR_FORT;
+  return THREAT_TIER.NORMAL;
+}
+
 function drawMinimap() {
-  const c = minimap.getContext('2d');
+  const c = minimapCtx;
   const inner = MM_SIZE - PAD * 2;
-  c.fillStyle = '#1a1520';
+  const palette = colorblindMode ? palettes.colorblind : palettes.default;
+  const contrastBoost = highContrastMode ? 1.2 : 1.0;
+
+  c.fillStyle = palette.bg;
   c.fillRect(0, 0, MM_SIZE, MM_SIZE);
-  c.strokeStyle = '#4a3f6a';
+  c.strokeStyle = palette.border;
+  c.lineWidth = highContrastMode ? 2 : 1;
   c.strokeRect(PAD, PAD, inner, inner);
 
-  const toPx = (nx, ny) => [PAD + nx * inner, PAD + ny * inner];
+  const toPx = (nx, ny, out = minimapTmp) => {
+    out.px = PAD + nx * inner;
+    out.py = PAD + ny * inner;
+    return out;
+  };
 
-  // Draw fort outline (main area)
   c.fillStyle = 'rgba(85, 70, 50, 0.4)';
   c.fillRect(PAD + inner * 0.1, PAD + inner * 0.05, inner * 0.8, inner * 0.7);
   c.strokeStyle = 'rgba(140, 115, 85, 0.6)';
   c.lineWidth = 1.5;
   c.strokeRect(PAD + inner * 0.1, PAD + inner * 0.05, inner * 0.8, inner * 0.7);
 
-  // Draw keep outline (inner safe zone)
   c.fillStyle = 'rgba(65, 55, 40, 0.5)';
   c.fillRect(PAD + inner * 0.35, PAD + inner * 0.35, inner * 0.3, inner * 0.3);
   c.strokeStyle = 'rgba(130, 105, 80, 0.7)';
-  c.lineWidth = 1.0;
+  c.lineWidth = 1;
   c.strokeRect(PAD + inner * 0.35, PAD + inner * 0.35, inner * 0.3, inner * 0.3);
 
-  // Smooth lerp (reduces jitter); cap at 50 enemies on mobile for perf
-  const enemyCap = window.innerWidth < 768 ? 50 : 80;
-  minimapLerpT = Math.min(minimapLerpT + 0.65, 1.0);
-  const pulsePhase = radarRevealActive ? Math.sin(Date.now() / 200) * 1.5 : 0;
-  for (let i = 0; i < Math.min(minimapData.enemies.length, enemyCap); i++) {
-    const e = minimapData.enemies[i];
+  const enemyCap = window.innerWidth < 768 ? 56 : 96;
+  minimapLerpT = Math.min(minimapLerpT + 0.55, 1.0);
+  const pulseT = Date.now() / 180;
+  const enemies = minimapData.enemies;
+  const density = Math.min(1.8, enemies.length / 52);
+  const iconScale = Math.max(0.6, 1.1 - density * 0.25);
+  const useClusters = enemies.length > 40;
+  const gridSize = 24;
+  declutterBins.clear();
+
+  c.textAlign = 'center';
+  c.textBaseline = 'middle';
+
+  for (let i = 0; i < Math.min(enemies.length, enemyCap); i++) {
+    const e = enemies[i];
     let px, py;
     if (i < prevMinimapData.enemies.length && minimapLerpT < 1.0) {
       const prev = prevMinimapData.enemies[i];
       px = PAD + (prev[0] + (e[0] - prev[0]) * minimapLerpT) * inner;
       py = PAD + (prev[1] + (e[1] - prev[1]) * minimapLerpT) * inner;
     } else {
-      [px, py] = toPx(e[0], e[1]);
+      const pos = toPx(e[0], e[1]);
+      px = pos.px;
+      py = pos.py;
     }
-    const isBoss = e.length > 2 && e[2] === true;
-    const dotSize = isBoss ? 3 : 1.5;
-    c.fillStyle = isBoss ? '#ff2828' : 'rgba(255, 80, 80, 0.95)';
+
+    const tier = getThreatTier(e);
+    const binKey = useClusters ? `${(px / gridSize) | 0}:${(py / gridSize) | 0}:${tier}` : null;
+    if (useClusters) {
+      const bucket = declutterBins.get(binKey);
+      if (bucket) {
+        bucket.count++;
+        bucket.x = (bucket.x * (bucket.count - 1) + px) / bucket.count;
+        bucket.y = (bucket.y * (bucket.count - 1) + py) / bucket.count;
+      } else {
+        declutterBins.set(binKey, { x: px, y: py, count: 1, tier });
+      }
+      continue;
+    }
+
+    const pulseByTier = tier === THREAT_TIER.BOSS ? Math.sin(pulseT) * 1.5 : tier === THREAT_TIER.ELITE ? Math.sin(pulseT * 0.8) * 0.9 : tier === THREAT_TIER.NEAR_FORT ? Math.sin(pulseT * 1.4) * 0.6 : 0;
+    const size = (tier === THREAT_TIER.BOSS ? 5 : tier === THREAT_TIER.ELITE ? 3.6 : tier === THREAT_TIER.NEAR_FORT ? 3 : 2) * iconScale + pulseByTier;
+    const col = tier === THREAT_TIER.BOSS ? palette.boss : tier === THREAT_TIER.ELITE ? palette.elite : tier === THREAT_TIER.NEAR_FORT ? palette.enemyNearFort : palette.enemy;
+
+    c.fillStyle = col;
     c.beginPath();
-    c.arc(px, py, dotSize, 0, Math.PI * 2);
+    c.arc(px, py, size, 0, Math.PI * 2);
     c.fill();
-    if (radarRevealActive) {
-      c.strokeStyle = 'rgba(100, 200, 255, 0.6)';
-      c.lineWidth = 1;
+
+    c.font = `${Math.max(8, size * 2.2)}px system-ui`;
+    c.fillStyle = highContrastMode ? '#ffffff' : 'rgba(20, 20, 20, 0.75)';
+    c.fillText(threatGlyphs[tier], px, py);
+
+    if (radarRevealActive || tier !== THREAT_TIER.NORMAL) {
+      c.strokeStyle = `rgba(100, 200, 255, ${0.3 * contrastBoost})`;
+      c.lineWidth = highContrastMode ? 1.8 : 1;
       c.beginPath();
-      c.arc(px, py, dotSize + 3 + pulsePhase, 0, Math.PI * 2);
+      c.arc(px, py, size + 3 + Math.sin(pulseT) * 1.5, 0, Math.PI * 2);
       c.stroke();
     }
   }
+
+  if (useClusters) {
+    for (const bucket of declutterBins.values()) {
+      const tier = bucket.tier;
+      const size = (tier === THREAT_TIER.BOSS ? 6 : tier === THREAT_TIER.ELITE ? 5 : 4) * iconScale;
+      const col = tier === THREAT_TIER.BOSS ? palette.boss : tier === THREAT_TIER.ELITE ? palette.elite : tier === THREAT_TIER.NEAR_FORT ? palette.enemyNearFort : palette.enemy;
+      c.fillStyle = col;
+      c.beginPath();
+      c.arc(bucket.x, bucket.y, size + Math.min(4, bucket.count * 0.2), 0, Math.PI * 2);
+      c.fill();
+      c.fillStyle = '#121212';
+      c.font = `bold ${Math.max(8, 8 + Math.min(6, bucket.count * 0.2))}px system-ui`;
+      c.fillText(bucket.count > 9 ? '9+' : String(bucket.count), bucket.x, bucket.y);
+    }
+  }
+
   for (const a of minimapData.allies.slice(0, 24)) {
-    const [px, py] = toPx(a[0], a[1]);
-    c.fillStyle = 'rgba(80, 160, 255, 0.9)';
+    const pos = toPx(a[0], a[1]);
+    c.fillStyle = palette.ally;
     c.beginPath();
-    c.arc(px, py, 1.8, 0, Math.PI * 2);
+    c.arc(pos.px, pos.py, 1.8 * iconScale, 0, Math.PI * 2);
     c.fill();
   }
+
   for (const p of minimapData.players) {
-    const [px, py] = toPx(p[0], p[1]);
-    c.fillStyle = 'rgba(80, 255, 120, 1)';
+    const pos = toPx(p[0], p[1]);
+    c.fillStyle = palette.player;
     c.beginPath();
-    c.arc(px, py, 3, 0, Math.PI * 2);
+    c.arc(pos.px, pos.py, 3 * iconScale, 0, Math.PI * 2);
     c.fill();
   }
+
   if (minimapData.chopper) {
     let cx, cy;
     if (prevMinimapData.chopper && minimapLerpT < 1.0) {
@@ -575,50 +734,60 @@ function drawMinimap() {
     } else {
       [cx, cy] = minimapData.chopper;
     }
-    const [px, py] = toPx(cx, cy);
-    c.fillStyle = 'rgba(200, 180, 80, 1)';
-    c.strokeStyle = 'rgba(255, 220, 100, 0.9)';
+    const pos = toPx(cx, cy);
+    c.fillStyle = palette.chopperFill;
+    c.strokeStyle = palette.chopperStroke;
     c.lineWidth = 1.5;
     c.beginPath();
-    c.arc(px, py, 4, 0, Math.PI * 2);
+    c.arc(pos.px, pos.py, 4, 0, Math.PI * 2);
     c.fill();
     c.stroke();
   }
 
   if (impactFlash) {
     const age = (Date.now() - impactFlash.at) / 1000;
-    if (age > 1.2) impactFlash = null;
-    else {
-      const [px, py] = toPx(impactFlash.x, impactFlash.y);
-      const alpha = Math.max(0, 1 - age / 1.2);
-      const r = 8 + age * 15;
-      c.strokeStyle = impactFlash.type === 'bomb' ? `rgba(255, 150, 50, ${alpha * 0.8})` : `rgba(100, 220, 120, ${alpha * 0.8})`;
-      c.lineWidth = 3;
-      c.beginPath();
-      c.arc(px, py, r, 0, Math.PI * 2);
-      c.stroke();
-      if (impactFlash.type === 'bomb' && impactFlash.kills > 0 && age < 0.8) {
-        c.textAlign = 'center';
-        if (impactFlash.mega) {
-          // MEGA STRIKE! special display
-          c.font = 'bold 18px system-ui';
-          c.fillStyle = `rgba(255, 100, 255, ${alpha})`;
-          c.fillText('MEGA STRIKE!', px, py - r - 20);
-          c.font = 'bold 16px system-ui';
-          c.fillStyle = `rgba(255, 220, 100, ${alpha})`;
-          c.fillText(impactFlash.kills + ' KILLS!', px, py - r - 4);
-          // Extra glow
-          const glowAlpha = alpha * 0.3 * (1 + Math.sin(age * 20));
-          c.strokeStyle = `rgba(255, 100, 255, ${glowAlpha})`;
-          c.lineWidth = 3;
-          c.beginPath();
-          c.arc(px, py, r + 5, 0, Math.PI * 2);
-          c.stroke();
-        } else {
-          c.font = 'bold 14px system-ui';
-          c.fillStyle = `rgba(255, 220, 100, ${alpha})`;
-          c.fillText(impactFlash.kills + ' KILLS!', px, py - r - 4);
+    if (age > 1.4) {
+      impactFlash = null;
+    } else {
+      const impactPos = toPx(impactFlash.x, impactFlash.y);
+      const alpha = Math.max(0, 1 - age / 1.4);
+      const ringColor = impactFlash.type === 'bomb' ? '255, 150, 50' : '100, 220, 120';
+
+      for (let i = 0; i < 3; i++) {
+        const t = age - i * 0.12;
+        if (t <= 0) continue;
+        const r = 10 + t * 22;
+        c.strokeStyle = `rgba(${ringColor}, ${Math.max(0, alpha - i * 0.2) * 0.9})`;
+        c.lineWidth = 3 - i * 0.7;
+        c.beginPath();
+        c.arc(impactPos.px, impactPos.py, r, 0, Math.PI * 2);
+        c.stroke();
+      }
+
+      if (impactFlash.from) {
+        const originPos = toPx(impactFlash.from[0], impactFlash.from[1]);
+        const tracerLen = Math.min(38, Math.hypot(impactPos.px - originPos.px, impactPos.py - originPos.py));
+        const ux = (impactPos.px - originPos.px) / Math.max(1, tracerLen);
+        const uy = (impactPos.py - originPos.py) / Math.max(1, tracerLen);
+        const tx = impactPos.px - ux * tracerLen;
+        const ty = impactPos.py - uy * tracerLen;
+        if (!minimapGradients.tracer) {
+          minimapGradients.tracer = c.createLinearGradient(0, 0, MM_SIZE, MM_SIZE);
+          minimapGradients.tracer.addColorStop(0, 'rgba(255,255,255,0.85)');
+          minimapGradients.tracer.addColorStop(1, 'rgba(255,180,80,0.1)');
         }
+        c.strokeStyle = minimapGradients.tracer;
+        c.lineWidth = 2.6;
+        c.beginPath();
+        c.moveTo(tx, ty);
+        c.lineTo(impactPos.px, impactPos.py);
+        c.stroke();
+      }
+
+      if (impactFlash.type === 'bomb' && impactFlash.kills > 0 && age < 0.9) {
+        c.font = impactFlash.mega ? 'bold 15px system-ui' : 'bold 12px system-ui';
+        c.fillStyle = `rgba(255, 220, 120, ${alpha})`;
+        c.fillText(`${impactFlash.kills} KILLS`, impactPos.px, impactPos.py - 22 - age * 9);
       }
     }
   }

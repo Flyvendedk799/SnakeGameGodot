@@ -568,10 +568,11 @@ func _draw_minimap():
 		var b_col = Color8(80, 200, 80) if b.is_intact() else Color8(200, 80, 80, 120)
 		draw_rect(Rect2(bx - 2, by - 1, 4, 2), b_col)
 
-	# Draw enemies (red dots) - cap at 64 to avoid draw spam in huge waves
+	# Draw enemies with threat tiers (boss / elite / near-fort)
 	const MAX_ENEMY_DOTS := 64
 	var enemy_drawn := 0
 	var radar_active = game.radar_reveal_timer > 0
+	var threat_counts = {"boss": 0, "elite": 0, "near": 0}
 	for enemy in game.enemy_container.get_children():
 		if enemy_drawn >= MAX_ENEMY_DOTS:
 			break
@@ -582,18 +583,33 @@ func _draw_minimap():
 		var ey = offset_y + enemy.position.y * mm_scale
 		var dot_size = 1.5
 		var dot_col = Color8(255, 60, 60, 200)
+		var ring_extra = 0.0
+		var in_fort = enemy.position.x >= map.FORT_LEFT and enemy.position.x <= map.FORT_RIGHT and enemy.position.y >= map.FORT_TOP and enemy.position.y <= map.FORT_BOTTOM
 		if enemy.is_boss:
-			dot_size = 3.5
+			threat_counts["boss"] += 1
+			dot_size = 3.7 + sin(anim_time * 4.5) * 1.2
 			dot_col = Color8(255, 40, 40)
-			# Pulsing boss marker
-			dot_size += sin(anim_time * 4.0) * 1.0
+			ring_extra = 2.4
 		elif enemy.is_bomber:
-			dot_col = Color8(255, 160, 50, 200)
+			threat_counts["elite"] += 1
+			dot_size = 2.6 + sin(anim_time * 2.8) * 0.5
+			dot_col = Color8(255, 200, 110, 220)
+			ring_extra = 1.2
+		elif in_fort:
+			threat_counts["near"] += 1
+			dot_size = 2.2 + sin(anim_time * 5.2) * 0.35
+			dot_col = Color8(255, 150, 90, 220)
 		draw_circle(Vector2(ex, ey), dot_size, dot_col)
-		# Radar pulse effect
-		if radar_active:
-			var pulse_size = dot_size + 2 + sin(anim_time * 8.0) * 1.0
+		# Radar and threat pulse rings
+		if radar_active or ring_extra > 0.0:
+			var pulse_speed = 8.0 if radar_active else 6.0
+			var pulse_size = dot_size + 2.0 + ring_extra + sin(anim_time * pulse_speed) * 0.8
 			draw_circle(Vector2(ex, ey), pulse_size, Color8(100, 200, 255, 120), false, 1.0)
+
+	# Threat cue legend mirrors companion minimap tiers
+	if threat_counts["boss"] > 0 or threat_counts["elite"] > 0 or threat_counts["near"] > 0:
+		var legend_text = "◆%d  ▲%d  ■%d" % [threat_counts["boss"], threat_counts["elite"], threat_counts["near"]]
+		draw_string(font, Vector2(mm_x + 2, mm_y + mm_size + 14), legend_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color8(255, 210, 140, 220))
 
 	# Draw allies (blue dots)
 	for ally in game.ally_container.get_children():
