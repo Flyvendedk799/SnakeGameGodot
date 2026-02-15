@@ -44,6 +44,8 @@ var last_dir: Vector2 = Vector2.LEFT
 var last_damager = null
 var nav_waypoint: Vector2 = Vector2.ZERO
 var nav_repath_timer: float = 0.0
+var nav_path: Array[Vector2] = []
+var nav_path_index: int = 0
 var stuck_timer: float = 0.0
 var last_pos: Vector2 = Vector2.ZERO
 
@@ -154,13 +156,6 @@ func _state_attacking_door(_delta, game):
 			game.particles.emit_burst(position.x, position.y, Color8(120, 120, 140), 4)
 
 func _state_chasing(delta, game):
-	# Check for nearby closed doors (inner keep / compartment doors)
-	var door = game.map.get_nearest_closed_door(position, 60.0)
-	if door:
-		target_door = door
-		state = EnemyState.ATTACKING_DOOR
-		return
-
 	# Build candidate list from all alive players + allies — chase across entire map
 	# Prioritize players over allies (enemies are drawn to the main threat)
 	var best_target = null
@@ -207,7 +202,20 @@ func _state_chasing(delta, game):
 	if best_dist <= attack_range:
 		state = EnemyState.ATTACKING
 		return
+
+	# If a blocking door is right in front of us, prioritize forcing it.
+	var direct_door = game.map.get_blocking_door_on_line(position, best_target.position, entity_size)
+	if direct_door and position.distance_to(direct_door.position) < 70.0:
+		target_door = direct_door
+		state = EnemyState.ATTACKING_DOOR
+		return
+
 	var chase_point = _resolve_chase_point(best_target.position, game)
+	var path_door = game.map.get_blocking_door_on_line(position, chase_point, entity_size)
+	if path_door and position.distance_to(path_door.position) < 70.0:
+		target_door = path_door
+		state = EnemyState.ATTACKING_DOOR
+		return
 	var dir = (chase_point - position)
 	if dir.length() > 1:
 		last_dir = dir.normalized()
@@ -223,23 +231,71 @@ func _state_chasing(delta, game):
 			stuck_timer = 0.0
 
 func _resolve_chase_point(target_pos: Vector2, game) -> Vector2:
-	if nav_repath_timer <= 0 or nav_waypoint == Vector2.ZERO or position.distance_to(nav_waypoint) < 22.0:
-		nav_waypoint = Vector2.ZERO
-		if not game.map.is_line_walkable(position, target_pos, entity_size):
-			var best = Vector2.ZERO
-			var best_score = INF
-			for wp in game.map.get_navigation_waypoints():
-				if not game.map.is_line_walkable(position, wp, entity_size):
-					continue
-				if not game.map.is_line_walkable(wp, target_pos, entity_size):
-					continue
-				var score = position.distance_to(wp) + wp.distance_to(target_pos)
-				if score < best_score:
-					best_score = score
-					best = wp
-			nav_waypoint = best
-		nav_repath_timer = 0.25
-	return nav_waypoint if nav_waypoint != Vector2.ZERO else target_pos
+	if nav_repath_timer <= 0 or nav_path.is_empty():
+		_build_nav_path(target_pos, game)
+		nav_repath_timer = 0.5
+	if not nav_path.is_empty():
+		if nav_path_index < nav_path.size() and position.distance_to(nav_path[nav_path_index]) < 24.0:
+			nav_path_index += 1
+		if nav_path_index < nav_path.size():
+			nav_waypoint = nav_path[nav_path_index]
+			return nav_waypoint
+		nav_path.clear()
+		nav_path_index = 0
+	return target_pos
+
+func _build_nav_path(target_pos: Vector2, game):
+	nav_path.clear()
+	nav_path_index = 0
+	if game.map.is_line_walkable_static(position, target_pos, entity_size):
+		return
+	var points = game.map.get_navigation_waypoints()
+	points.append(position)
+	var start_idx = points.size() - 1
+	points.append(target_pos)
+	var goal_idx = points.size() - 1
+	var g_score: Dictionary = {start_idx: 0.0}
+	var f_score: Dictionary = {start_idx: position.distance_to(target_pos)}
+	var came_from: Dictionary = {}
+	var open: Array[int] = [start_idx]
+
+	while not open.is_empty():
+		var current = open[0]
+		var current_f = f_score.get(current, INF)
+		for idx in open:
+			var cand_f = f_score.get(idx, INF)
+			if cand_f < current_f:
+				current_f = cand_f
+				current = idx
+		if current == goal_idx:
+			_reconstruct_nav_path(came_from, points, goal_idx)
+			return
+		open.erase(current)
+		for neighbor in range(points.size()):
+			if neighbor == current:
+				continue
+			if not game.map.is_line_walkable_static(points[current], points[neighbor], entity_size):
+				continue
+			var tentative_g = g_score.get(current, INF) + points[current].distance_to(points[neighbor])
+			if tentative_g >= g_score.get(neighbor, INF):
+				continue
+			came_from[neighbor] = current
+			g_score[neighbor] = tentative_g
+			f_score[neighbor] = tentative_g + points[neighbor].distance_to(points[goal_idx])
+			if not open.has(neighbor):
+				open.append(neighbor)
+
+func _reconstruct_nav_path(came_from: Dictionary, points: Array, goal_idx: int):
+	var path_idxs: Array[int] = [goal_idx]
+	var cur = goal_idx
+	while came_from.has(cur):
+		cur = came_from[cur]
+		path_idxs.push_front(cur)
+	nav_path.clear()
+	for idx in path_idxs:
+		nav_path.append(points[idx])
+	if not nav_path.is_empty() and position.distance_to(nav_path[0]) < 8.0:
+		nav_path.remove_at(0)
 
 func _state_attacking(_delta, game):
 	if chase_target == null or (chase_target is AllyEntity and chase_target.current_hp <= 0):
