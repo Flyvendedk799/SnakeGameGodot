@@ -275,23 +275,102 @@ const abilityInfo = {
   emp: { cooldownMs: COOLDOWN_EMP_MS, maxPerWave: EMP_PER_WAVE, hint: 'Tap map to stun enemies (2s)', needsTap: true }
 };
 
+function _hasOnlyKeys(obj, allowed) {
+  const keys = Object.keys(obj);
+  return keys.length === allowed.length && keys.every((k) => allowed.includes(k));
+}
+
+function _numInRange(v, min, max) {
+  return typeof v === 'number' && Number.isFinite(v) && v >= min && v <= max;
+}
+
+function _parsePoint(p) {
+  if (!Array.isArray(p) || p.length !== 2) return null;
+  if (!_numInRange(p[0], 0, 1) || !_numInRange(p[1], 0, 1)) return null;
+  return [p[0], p[1]];
+}
+
+function _parsePointList(list, max = 256) {
+  if (!Array.isArray(list) || list.length > max) return null;
+  const parsed = [];
+  for (const item of list) {
+    const p = _parsePoint(item);
+    if (!p) return null;
+    parsed.push(p);
+  }
+  return parsed;
+}
+
+function parseServerMessage(m) {
+  if (typeof m !== 'object' || m === null || Array.isArray(m) || typeof m.type !== 'string') return null;
+  switch (m.type) {
+    case 'error':
+      if (!_hasOnlyKeys(m, ['type', 'code'])) return null;
+      if (typeof m.code !== 'string') return null;
+      return m;
+    case 'joined':
+      if (!_hasOnlyKeys(m, ['type', 'code', 'token'])) return null;
+      if (typeof m.code !== 'string' || typeof m.token !== 'string') return null;
+      return m;
+    case 'game_connected':
+    case 'new_wave':
+      if (!_hasOnlyKeys(m, ['type'])) return null;
+      return m;
+    case 'drop_ack':
+      if (!_hasOnlyKeys(m, ['type', 'x', 'y', 'ability', 'remaining'])) return null;
+      if (!_numInRange(m.x, 0, 1) || !_numInRange(m.y, 0, 1)) return null;
+      if (!['bomb', 'supply', 'emp'].includes(m.ability)) return null;
+      if (!Number.isInteger(m.remaining) || m.remaining < 0 || m.remaining > 2) return null;
+      return m;
+    case 'radar_ack':
+      if (!_hasOnlyKeys(m, ['type', 'remaining'])) return null;
+      if (!Number.isInteger(m.remaining) || m.remaining < 0 || m.remaining > 1) return null;
+      return m;
+    case 'minimap': {
+      const allowed = ['type', 'enemies', 'allies', 'players', 'wave', 'state', 'chopper'];
+      if (!Object.keys(m).every((k) => allowed.includes(k))) return null;
+      const enemies = _parsePointList(m.enemies || []);
+      const allies = _parsePointList(m.allies || []);
+      const players = _parsePointList(m.players || []);
+      if (!enemies || !allies || !players) return null;
+      if (m.wave !== undefined && (!Number.isInteger(m.wave) || m.wave < 0 || m.wave > 9999)) return null;
+      if (m.state !== undefined && typeof m.state !== 'string') return null;
+      if (m.chopper !== undefined && _parsePoint(m.chopper) === null) return null;
+      return { ...m, enemies, allies, players, chopper: m.chopper ? _parsePoint(m.chopper) : null };
+    }
+    case 'bomb_impact':
+      if (!_hasOnlyKeys(m, ['type', 'x', 'y', 'kills', 'mega'])) return null;
+      if (!_numInRange(m.x, 0, 1) || !_numInRange(m.y, 0, 1)) return null;
+      if (!Number.isInteger(m.kills) || m.kills < 0 || m.kills > 999) return null;
+      if (typeof m.mega !== 'boolean') return null;
+      return m;
+    case 'supply_impact':
+      if (!_hasOnlyKeys(m, ['type', 'x', 'y'])) return null;
+      if (!_numInRange(m.x, 0, 1) || !_numInRange(m.y, 0, 1)) return null;
+      return m;
+    case 'game_state':
+      if (!_hasOnlyKeys(m, ['type', 'state'])) return null;
+      if (typeof m.state !== 'string') return null;
+      return m;
+    case 'pong':
+      if (!_hasOnlyKeys(m, ['type', 'timestamp'])) return null;
+      if (!Number.isInteger(m.timestamp) || m.timestamp < 0) return null;
+      return m;
+    default:
+      return null;
+  }
+}
+
 function setupWsHandlers(socket) {
   socket.onmessage = (e) => {
     let m;
     try { m = JSON.parse(e.data); } catch (_) { return; }
-    // Validate message structure
-    if (typeof m !== 'object' || m === null || Array.isArray(m)) return;
-    if (typeof m.type !== 'string') return;
+    m = parseServerMessage(m);
+    if (!m) return;
 
     if (m.type === 'error') {
-      const msg = m.message || 'Unknown error';
-      if (msg.includes('Invalid code')) {
-        showError('Invalid Code', 'The session code is incorrect or expired. Please create a new session.');
-      } else if (msg.includes('expired')) {
-        showError('Session Expired', 'Your session has expired after 2 hours. Please create a new session.');
-      } else {
-        showError('Connection Error', msg);
-      }
+      if (m.code === 'invalid_session') showError('Session Error', 'Session invalid or expired. Create a new one.');
+      else showError('Connection Error', 'Request rejected by server.');
       return;
     }
 
@@ -418,7 +497,15 @@ function _hapticFeedback() {
 startBtn.onclick = async () => {
   try {
     const r = await fetch('/session/create');
+    if (!r.ok) {
+      showError('Rate Limited', 'Too many session requests. Please wait a moment and try again.');
+      return;
+    }
     const d = await r.json();
+    if (!d || typeof d.code !== 'string' || typeof d.token !== 'string') {
+      showError('Connection Error', 'Invalid server response. Please retry.');
+      return;
+    }
     sessionCode = d.code;
     reconnectToken = d.token;
     codeEl.textContent = sessionCode;

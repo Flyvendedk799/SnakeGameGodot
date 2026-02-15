@@ -18,6 +18,47 @@ var _reconnect_timer: float = 0.0
 var _reconnect_backoff: float = 2.0
 const RECONNECT_MAX: float = 30.0
 
+func _dict_has_only_keys(d: Dictionary, allowed: Array[String]) -> bool:
+	if d.size() != allowed.size():
+		return false
+	for key in d.keys():
+		if not allowed.has(str(key)):
+			return false
+	return true
+
+func _num_in_range(v, min_v: float, max_v: float) -> bool:
+	if not (v is float or v is int):
+		return false
+	var n := float(v)
+	return is_finite(n) and n >= min_v and n <= max_v
+
+func _parse_server_message(data: Dictionary) -> Dictionary:
+	if not data.has("type") or not (data.get("type") is String):
+		return {}
+	var t := str(data.get("type"))
+	match t:
+		"joined":
+			if not _dict_has_only_keys(data, ["type", "code", "token"]): return {}
+			if not (data.get("code") is String) or not (data.get("token") is String): return {}
+			return data
+		"error":
+			if not _dict_has_only_keys(data, ["type", "code"]): return {}
+			if not (data.get("code") is String): return {}
+			return data
+		"bomb_drop", "supply_drop", "emp_drop":
+			if not _dict_has_only_keys(data, ["type", "x", "y"]): return {}
+			if not _num_in_range(data.get("x"), 0.0, 1.0) or not _num_in_range(data.get("y"), 0.0, 1.0): return {}
+			return { "type": t, "x": float(data.get("x")), "y": float(data.get("y")) }
+		"radar_ping", "companion_connected":
+			if not _dict_has_only_keys(data, ["type"]): return {}
+			return data
+		"chopper_input":
+			if not _dict_has_only_keys(data, ["type", "x", "y"]): return {}
+			if not _num_in_range(data.get("x"), -1.0, 1.0) or not _num_in_range(data.get("y"), -1.0, 1.0): return {}
+			return { "type": t, "x": float(data.get("x")), "y": float(data.get("y")) }
+		_:
+			return {}
+
 func connect_with_code(code: String):
 	_code = code.to_upper().strip_edges()
 	if _code.length() != 6: return
@@ -64,13 +105,13 @@ func _process(delta: float):
 			if txt.is_empty(): continue
 			var data = JSON.parse_string(txt)
 			if not data is Dictionary: continue
-			if not data.has("type"): continue
-			if data is Dictionary:
-				match data.get("type"):
+			var parsed := _parse_server_message(data)
+			if parsed.is_empty():
+				continue
+			match parsed.get("type"):
 					"joined":
 						# Store reconnect token for future reconnections
-						if data.has("token"):
-							_reconnect_token = str(data.get("token"))
+						_reconnect_token = str(parsed.get("token"))
 						connection_status_changed.emit(true)
 					"error":
 						connection_status_changed.emit(false)
@@ -79,22 +120,22 @@ func _process(delta: float):
 						_disconnect()
 						return
 					"bomb_drop":
-						var x = float(data.get("x", 0.5))
-						var y = float(data.get("y", 0.5))
+						var x = float(parsed.get("x", 0.5))
+						var y = float(parsed.get("y", 0.5))
 						bomb_drop_requested_at_normalized.emit(x, y)
 					"supply_drop":
-						var x = float(data.get("x", 0.5))
-						var y = float(data.get("y", 0.5))
+						var x = float(parsed.get("x", 0.5))
+						var y = float(parsed.get("y", 0.5))
 						supply_drop_requested_at_normalized.emit(x, y)
 					"emp_drop":
-						var x = float(data.get("x", 0.5))
-						var y = float(data.get("y", 0.5))
+						var x = float(parsed.get("x", 0.5))
+						var y = float(parsed.get("y", 0.5))
 						emp_drop_requested_at_normalized.emit(x, y)
 					"radar_ping":
 						radar_ping_requested.emit()
 					"chopper_input":
-						var ax = float(data.get("x", 0))
-						var ay = float(data.get("y", 0))
+						var ax = float(parsed.get("x", 0))
+						var ay = float(parsed.get("y", 0))
 						chopper_input_received.emit(ax, ay)
 	elif state == WebSocketPeer.STATE_CLOSED:
 		connection_status_changed.emit(false)
