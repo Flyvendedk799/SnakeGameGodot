@@ -1,0 +1,217 @@
+# Knight Elite (a.k.a. “Knight Orc Assault”) — Explainer + “build a similar game” blueprint
+
+## 1) What the game is
+**Knight Elite** is a single-player Flash “barricade defense” action game: you directly control **one knight** in a small fort with **multiple entrances**, surviving **50 enemy waves**. Enemies try to break barricades and kill you; you can fight outside/at barricades or inside the fort, repair broken barricades, and recruit AI allies. :contentReference[oaicite:0]{index=0}
+
+It’s commonly referenced as **Knight Orc Assault (also called Knight Elite)**, developed by **Kaiparasoft** and published by **Ninja Kiwi**, with a release date listed as **May 10, 2010**. :contentReference[oaicite:1]{index=1}
+
+---
+
+## 2) Core player fantasy
+“You are the hero defender *and* the base manager.”
+- Moment-to-moment: **move + aim + attack** (melee and ranged), kite enemies, protect choke points
+- Macro: spend earned resources to **upgrade gear**, **unlock buildings**, and **hire troops** to stabilize waves :contentReference[oaicite:2]{index=2}
+
+---
+
+## 3) Controls and interaction model
+From multiple sources, the core controls are:
+- **WASD**: move
+- **Mouse click**: attack/aim
+- **Q / E**: swap weapons (melee ↔ ranged)
+- **F**: repair barricade (when near)
+- **G**: regroup soldiers (recall them toward center)
+- **Space / Esc**: pause :contentReference[oaicite:3]{index=3}
+
+Design takeaway for your clone-like game:
+- Keep the **input set tiny** (move / attack / swap / interact / command) so the upgrade/meta layer doesn’t overwhelm.
+
+---
+
+## 4) Game loop (minute-to-minute and wave-to-wave)
+
+### A) Wave phase (real-time)
+1. Enemies spawn and path toward **one of several entrances**.
+2. Player moves between entrances, prioritizing:
+   - stopping breaches,
+   - preventing getting surrounded,
+   - keeping barricades alive long enough
+3. Enemies can damage barricades; player can repair them at any time if nearby. :contentReference[oaicite:4]{index=4}
+
+**Loss condition:** you lose if **your knight dies** (not because the “base” is destroyed). :contentReference[oaicite:5]{index=5}
+
+### B) Reward + progression
+- Killing enemies gives **gold + XP**.
+- **Gold** drops on the ground and must be **picked up** (and can despawn). XP is automatic. :contentReference[oaicite:6]{index=6}
+- XP → **level up** → pick **one skill** from a set of categories. :contentReference[oaicite:7]{index=7}
+- Progress saving is noted as happening **every 5 waves** and **on level up** (per the wiki). :contentReference[oaicite:8]{index=8}
+
+---
+
+## 5) Systems breakdown (what you’d need to implement)
+
+### 5.1 Combat
+Two weapon “modes”:
+- **Melee**: short range, often multi-hit arcs (depends on weapon)
+- **Ranged**: crossbow-type weapon early; later upgrades shoot faster/do more damage :contentReference[oaicite:9]{index=9}
+
+Important combat traits described:
+- Some weapons **stun** (e.g., flail/maul descriptions).
+- There’s a “stunlock” strategy: repeated hits briefly stun many enemies. :contentReference[oaicite:10]{index=10}
+
+**Implementation notes (for a similar game):**
+- Use a **simple hitbox** system: cone/arc for melee, projectile for ranged.
+- Add “feel” via:
+  - hit pause / small knockback
+  - brief stun window
+  - clear enemy windups (especially bombers and bosses)
+
+### 5.2 Skills (RPG layer)
+On level-up, choose one skill that improves:
+- **Weapon damage** (sword/flail/axe/maul/crossbow expertise)
+- **Defense/mobility** (max HP, armor speed penalty reduction, better shield/armor mitigation)
+- **Combat maneuvers** (crit chance; move speed; cleave/hit-more-targets)
+- **Training** (cheaper soldiers; stronger/faster/higher HP soldiers) :contentReference[oaicite:11]{index=11}
+
+**Design takeaway:** the skill tree is “flat picks” (one perk at a time), not a complex branching tree—great for replayability without overwhelming players.
+
+### 5.3 Economy
+Two currencies show up in the wiki:
+- **Gold**: primary currency from drops; used for equipment, buildings, hiring
+- **Crystals**: used for advanced units/items; generated via **Crystal Mine** tied to end-of-wave bonus :contentReference[oaicite:12]{index=12}
+
+**Key tension:** spend gold on immediate power (weapon/armor/potions) vs long-term scaling (mines/buildings/troops).
+
+### 5.4 Buildings / tech progression (unlock gates)
+Buildings unlock more options in a tiered way; examples called out:
+- **Barracks** → hire Footmen; later **Knight Academy** → hire Knights :contentReference[oaicite:13]{index=13}
+- **Armory** → better weapons/armor; **Engineering Workshop** → defensive structures like spikes/moat :contentReference[oaicite:14]{index=14}
+- **Gold Mine** doubles end-of-wave gold; later **Crystal Mine** provides crystals based on gold bonus :contentReference[oaicite:15]{index=15}
+- **Alchemist Lab** → potions (e.g., full heal potion), minimap orb :contentReference[oaicite:16]{index=16}
+- **Wizard Tower / Advanced Combat Facility** → Wizards/Shredders and high-end gear :contentReference[oaicite:17]{index=17}
+
+**Defensive upgrades** mentioned:
+- Spiked barricades (damage attackers)
+- Moat (slows enemies) :contentReference[oaicite:18]{index=18}
+
+### 5.5 Units (allies) and how they function
+Allies are “hireable” soldiers that auto-fight and mainly serve as pressure relief / distractions:
+- **Footman** (cheap, tanky-ish, low damage)
+- **Archer** (ranged, decent damage, low HP)
+- **Knight** (fast, high HP, heavy damage)
+- **Wizard** (ranged magic bolts, very heavy damage; costs crystals too)
+- **Shredder** (very high HP, heavy damage; expensive + crystals) :contentReference[oaicite:19]{index=19}
+
+Command:
+- **Regroup (G)** pulls them back to center, helping you re-form a defense line. :contentReference[oaicite:20]{index=20}
+
+### 5.6 Enemies and pacing (wave design)
+Enemy roster with first appearances (per the wiki):
+- Orc Grunt (Wave 1)
+- Orc Raider (Wave 3)
+- Goblin Bomber (Wave 7)
+- Orc Soldier (Wave 9)
+- Ogre (Wave 19)
+- Orc Wizard (Wave 25)
+- Ogre Soldier (Wave 40)
+- Orc Titan boss (Wave 50) :contentReference[oaicite:21]{index=21}
+
+**Design takeaway:** the game introduces a new “problem” enemy every few waves, forcing you to pivot:
+- Raiders punish unarmored players (burst damage)
+- Bombers create “do not let touch barricade” urgency
+- Wizards force line-of-sight play / ranged answers
+- Late bosses demand sustained DPS + survivability
+
+---
+
+## 6) Equipment (what matters for a “similar” design)
+Examples of weapon progression (costs are from the wiki; you don’t need to match them):
+- Start: Shortsword
+- Early unlock: Crossbow (ranged), Battle Axe (multi-hit), Flail (stun), Longsword (range), Maul (slow big stun)
+- Late magic weapons (examples): Axe of Regeneration, Crossbow of Speed, etc. :contentReference[oaicite:22]{index=22}
+
+Other gear types:
+- **Armor** (damage reduction, movement penalty interactions)
+- **Shields** (damage reduction; some restrictions on 2H weapons)
+- **Magic items/potions**: full heal, stoneskin, fury, minimap orb :contentReference[oaicite:23]{index=23}
+
+---
+
+## 7) What makes Knight Elite “work” (design pillars to copy—legally)
+If you want to make a similar-feeling game (without copying art/code/levels):
+
+### Pillar A — Multi-entrance pressure
+Multiple doors/entrances create constant triage: “Where do I go next?”
+- Your clone can use 3–8 entrances; add map variety (different fort layouts).
+
+### Pillar B — One hero + supporting army
+You are the **only controlled unit**, so the player always feels responsible.
+- Allies should be helpful but not perfect (they buy you time, not win for you). :contentReference[oaicite:24]{index=24}
+
+### Pillar C — Tight wave cadence + frequent upgrades
+Waves are short enough that upgrades feel frequent and satisfying.
+- Between waves, present **clear upgrade choices**: “more damage now” vs “more economy later”.
+
+### Pillar D — “Touch-and-repair” base interaction
+Repairing barricades is an embodied task (you must run there).
+- This turns base defense into an action skill, not a menu-only system. :contentReference[oaicite:25]{index=25}
+
+---
+
+## 8) “Make a similar game” implementation blueprint (high level)
+
+### 8.1 Minimal feature set (MVP)
+To get a playable prototype fast, implement:
+1. Top-down movement + facing/aiming
+2. Melee attack arc + ranged projectile weapon swap
+3. Enemy spawner + basic pathing to nearest entrance
+4. Barricade objects with HP + repair interaction
+5. Gold drops + pickup + shop menu
+6. Wave counter + simple “between waves” upgrade pause
+
+Then add:
+- XP/level-up perk selection
+- Ally hiring + basic ally AI
+- Building unlock tree
+- More enemy types (bomber, ranged caster, boss)
+
+### 8.2 Suggested architecture
+- **GameState**: `MainMenu`, `WaveActive`, `BetweenWaves`, `Paused`, `GameOver`
+- **WaveDirector**:
+  - reads a wave table: enemy mix, spawn rate, special events
+  - ends wave when spawn budget exhausted AND all alive enemies defeated
+- **AI**:
+  - Enemies choose target: nearest entrance/barricade; if breached, chase player or nearest structure
+  - Allies choose target: nearest enemy within radius; regroup sets a “rally point”
+
+### 8.3 Balancing knobs
+- Player:
+  - base HP, base DPS, crit chance, move speed
+- Enemies:
+  - spawn count, HP, damage, speed, stun resistance
+- Base:
+  - barricade HP, repair speed, spike damage, slow-field strength
+- Economy:
+  - gold per kill, drop decay time, end-of-wave bonus, mine multipliers
+
+---
+
+## 9) How to avoid cloning too closely (recommended)
+You can keep the *structure* but change the *identity*:
+- Theme swap: sci-fi outpost, cyberpunk alley, haunted mansion, robot factory
+- Replace “buildings” with “modules/cards” or “perks” that slot into the base
+- New twist ideas:
+  - elemental combo system (freeze + shatter)
+  - active abilities on cooldown (dash, taunt banner, turret throw)
+  - procedural fort layouts per run (roguelite)
+  - recruitable allies have **synergies** (formation bonuses)
+
+This keeps your game “inspired by” rather than “a copy.”
+
+---
+
+## 10) Quick reference (from sources)
+- 50 waves; defend a fort; repair barricades; hire troops; gear/building upgrades; level-up skills :contentReference[oaicite:26]{index=26}
+- Controls: WASD, mouse attack, Q/E swap, F repair, G regroup, Space/Esc pause :contentReference[oaicite:27]{index=27}
+- Ally types: Footman, Archer, Knight, Wizard, Shredder :contentReference[oaicite:28]{index=28}
+- Enemy types and boss pacing up to Wave 50 Orc Titan :contentReference[oaicite:29]{index=29}
