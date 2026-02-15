@@ -46,7 +46,8 @@ app.get('/session/create', (req, res) => {
     lastSupplyAt: 0,
     lastRadarAt: 0,
     lastEmpAt: 0,
-    reconnectToken: token
+    reconnectToken: token,
+    relayStateSeq: 0
   });
   res.json({ code, token });
 });
@@ -59,6 +60,13 @@ function safeSend(ws, obj) {
     ws.send(str);
     return true;
   } catch (e) { return false; }
+}
+
+
+function relayWithMetadata(session, payload) {
+  if (!session) return payload;
+  session.relayStateSeq = (session.relayStateSeq || 0) + 1;
+  return { ...payload, relay_ts: Date.now(), relay_seq: session.relayStateSeq };
 }
 
 const server = createServer(app);
@@ -110,6 +118,7 @@ wss.on('connection', (ws) => {
         if (ws.role === 'game') s.game = ws;
         else if (ws.role === 'companion') {
           s.companion = ws;
+          s.relayStateSeq = 0;
           s.dropsThisWave = 0;
           s.suppliesThisWave = 0;
           s.radarsThisWave = 0;
@@ -148,6 +157,7 @@ wss.on('connection', (ws) => {
         if (ws.role === 'game') foundSession.game = ws;
         else if (ws.role === 'companion') {
           foundSession.companion = ws;
+          foundSession.relayStateSeq = 0;
           foundSession.dropsThisWave = 0;
           foundSession.suppliesThisWave = 0;
           foundSession.radarsThisWave = 0;
@@ -203,7 +213,7 @@ wss.on('connection', (ws) => {
       } else if (t === 'minimap' && ws.role === 'game' && ws.code) {
         const s = sessions.get(ws.code);
         if (s && s.companion) {
-          const fwd = { type: 'minimap', enemies: msg.enemies || [], allies: msg.allies || [], players: msg.players || [], wave: msg.wave, state: msg.state, chopper: msg.chopper };
+          const fwd = relayWithMetadata(s, { type: 'minimap', enemies: msg.enemies || [], allies: msg.allies || [], players: msg.players || [], chopper: msg.chopper });
           safeSend(s.companion, fwd);
         }
       } else if (t === 'bomb_impact' && ws.role === 'game' && ws.code) {
@@ -218,7 +228,12 @@ wss.on('connection', (ws) => {
         if (s && s.companion) safeSend(s.companion, { type: 'supply_impact', x: msg.x, y: msg.y });
       } else if (t === 'game_state' && ws.role === 'game' && ws.code) {
         const s = sessions.get(ws.code);
-        if (s && s.companion) safeSend(s.companion, { type: 'game_state', state: msg.state });
+        if (s && s.companion) {
+          const stateSeq = Number.isFinite(Number(msg.state_seq)) ? Number(msg.state_seq) : 0;
+          const wave = Number.isFinite(Number(msg.wave)) ? Number(msg.wave) : 0;
+          const fwd = relayWithMetadata(s, { type: 'game_state', state: msg.state, state_seq: stateSeq, wave });
+          safeSend(s.companion, fwd);
+        }
       } else if (t === 'ping' && ws.role === 'companion') {
         safeSend(ws, { type: 'pong', timestamp: msg.timestamp });
       }
