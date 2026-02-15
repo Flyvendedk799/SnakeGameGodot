@@ -44,6 +44,12 @@ let radarRevealActive = false;
 // Connection quality
 let latencyMs = 0;
 let lastPingAt = 0;
+let connectionQuality = 'Unknown';
+let packetGapCount = 0;
+let lastMinimapPacketAt = 0;
+let fpsEstimate = 0;
+let frameCounter = 0;
+let frameWindowStart = performance.now();
 
 // Stats tracking
 let stats = {
@@ -275,6 +281,25 @@ const abilityInfo = {
   emp: { cooldownMs: COOLDOWN_EMP_MS, maxPerWave: EMP_PER_WAVE, hint: 'Tap map to stun enemies (2s)', needsTap: true }
 };
 
+
+function connectionQualityTier() {
+  if (!ws || ws.readyState !== 1) return { label: 'Offline', color: '#ef4444' };
+  if (latencyMs <= 0) return { label: 'Syncing', color: '#a78bfa' };
+  if (latencyMs < 90 && packetGapCount <= 1 && fpsEstimate >= 45) return { label: 'Great', color: '#4ade80' };
+  if (latencyMs < 180 && packetGapCount <= 3 && fpsEstimate >= 30) return { label: 'Good', color: '#facc15' };
+  return { label: 'Poor', color: '#fb7185' };
+}
+
+function updateConnectionBadge() {
+  const tier = connectionQualityTier();
+  connectionQuality = tier.label;
+  if (tier.label === 'Offline') {
+    connStatusEl.innerHTML = '<span class="status-dot offline"></span> Offline';
+    return;
+  }
+  connStatusEl.innerHTML = `<span class="status-dot online"></span> ${tier.label} · ${latencyMs > 0 ? `${Math.round(latencyMs)}ms` : '--'}`;
+}
+
 function setupWsHandlers(socket) {
   socket.onmessage = (e) => {
     let m;
@@ -309,7 +334,7 @@ function setupWsHandlers(socket) {
       minimapData = { enemies: [], allies: [], players: [] };
       waiting.classList.add('hidden');
       connected.classList.remove('hidden');
-      connStatusEl.innerHTML = '<span class="status-dot online"></span> Connected';
+      updateConnectionBadge();
     } else if (m.type === 'drop_ack') {
       if (m.ability === 'bomb') {
         lastBombAt = Date.now();
@@ -350,6 +375,9 @@ function setupWsHandlers(socket) {
       stats.wavesAssisted++;
       saveStats();
     } else if (m.type === 'minimap') {
+      const now = Date.now();
+      if (lastMinimapPacketAt > 0 && (now - lastMinimapPacketAt) > 450) packetGapCount++;
+      lastMinimapPacketAt = now;
       prevMinimapData = minimapData;
       minimapData = {
         enemies: Array.isArray(m.enemies) ? m.enemies : [],
@@ -394,6 +422,7 @@ function setupWsHandlers(socket) {
       if (m.timestamp && lastPingAt) {
         latencyMs = Date.now() - lastPingAt;
       }
+      updateConnectionBadge();
     }
   };
   socket.onclose = () => {
@@ -788,6 +817,17 @@ setInterval(() => {
   }
 }, 5000);
 
+setInterval(() => {
+  if (!ws || ws.readyState !== 1) return;
+  ws.send(JSON.stringify({
+    type: 'qos_sample',
+    rttMs: Math.round(latencyMs),
+    fps: Number(fpsEstimate.toFixed(1)),
+    packetGapCount
+  }));
+  packetGapCount = 0;
+}, 5000);
+
 // Update ability button states
 function updateAbilityButtons() {
   const abilities = [
@@ -855,7 +895,8 @@ setInterval(() => {
                        gameState === 'game_over' ? 'Game over' : 'Waiting';
     const latencyColor = latencyMs < 100 ? '#4ade80' : latencyMs < 200 ? '#facc15' : '#ef4444';
     const latencyDot = latencyMs > 0 ? `<span style="color:${latencyColor}">●</span> ${latencyMs}ms` : '';
-    const waveHtml = currentWave > 0 ? `Wave ${currentWave} • ${stateLabel} ${latencyDot}` : `${stateLabel} ${latencyDot}`;
+    const quality = connectionQuality || 'Unknown';
+    const waveHtml = currentWave > 0 ? `Wave ${currentWave} • ${stateLabel} • ${quality} ${latencyDot}` : `${stateLabel} • ${quality} ${latencyDot}`;
     if (waveHtml !== _lastWaveHtml) {
       waveInfoEl.innerHTML = waveHtml;
       _lastWaveHtml = waveHtml;
@@ -887,6 +928,14 @@ let lastDrawTime = 0;
 const DRAW_INTERVAL_MS = 16;  // 60fps for real-time minimap
 function tick(now) {
   const t = typeof now === 'number' ? now : performance.now();
+  frameCounter++;
+  const elapsed = t - frameWindowStart;
+  if (elapsed >= 1000) {
+    fpsEstimate = (frameCounter * 1000) / elapsed;
+    frameCounter = 0;
+    frameWindowStart = t;
+    updateConnectionBadge();
+  }
   if (connected.classList.contains('hidden') === false) {
     if (t - lastDrawTime >= DRAW_INTERVAL_MS) {
       lastDrawTime = t;

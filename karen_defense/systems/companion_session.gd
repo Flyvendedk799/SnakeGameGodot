@@ -9,6 +9,8 @@ signal radar_ping_requested()
 signal connection_status_changed(connected: bool)
 
 @export var server_url: String = "wss://snakegamegodot-production.up.railway.app/ws"
+@export var enable_debug_counters: bool = false
+@export var send_interval_target_sec: float = 0.2
 
 var _ws: WebSocketPeer
 var _code: String = ""
@@ -17,6 +19,10 @@ var _connecting: bool = false
 var _reconnect_timer: float = 0.0
 var _reconnect_backoff: float = 2.0
 const RECONNECT_MAX: float = 30.0
+
+var _debug_reconnect_attempts: int = 0
+var _debug_send_interval_misses: int = 0
+var _last_send_minimap_at_msec: int = 0
 
 func connect_with_code(code: String):
 	_code = code.to_upper().strip_edges()
@@ -28,6 +34,8 @@ func connect_with_code(code: String):
 	_connect()
 
 func _connect():
+	if enable_debug_counters:
+		_debug_reconnect_attempts += 1
 	_ws = WebSocketPeer.new()
 	_ws.connect_to_url(server_url)
 	_connecting = true
@@ -101,6 +109,24 @@ func _process(delta: float):
 		_ws = null
 		_reconnect_timer = _reconnect_backoff
 
+
+func _track_send_interval_miss(now_msec: int):
+	if not enable_debug_counters:
+		return
+	if _last_send_minimap_at_msec > 0 and send_interval_target_sec > 0.0:
+		var elapsed_sec = float(now_msec - _last_send_minimap_at_msec) / 1000.0
+		if elapsed_sec > (send_interval_target_sec * 1.8):
+			_debug_send_interval_misses += 1
+	_last_send_minimap_at_msec = now_msec
+
+func get_debug_counters() -> Dictionary:
+	if not enable_debug_counters:
+		return {}
+	return {
+		"reconnect_attempts": _debug_reconnect_attempts,
+		"send_interval_misses": _debug_send_interval_misses
+	}
+
 func notify_new_wave():
 	if _ws != null and _ws.get_ready_state() == WebSocketPeer.STATE_OPEN:
 		_ws.send_text(JSON.stringify({ type = "new_wave" }))
@@ -108,12 +134,14 @@ func notify_new_wave():
 func send_minimap(enemies: Array, allies: Array, players: Array):
 	if _ws == null or _ws.get_ready_state() != WebSocketPeer.STATE_OPEN:
 		return
+	_track_send_interval_miss(Time.get_ticks_msec())
 	var payload = { type = "minimap", enemies = enemies, allies = allies, players = players }
 	_ws.send_text(JSON.stringify(payload))
 
 func send_minimap_with_state(enemies: Array, allies: Array, players: Array, wave: int, state: String, chopper_pos = null):
 	if _ws == null or _ws.get_ready_state() != WebSocketPeer.STATE_OPEN:
 		return
+	_track_send_interval_miss(Time.get_ticks_msec())
 	var payload = { type = "minimap", enemies = enemies, allies = allies, players = players, wave = wave, state = state }
 	if chopper_pos != null:
 		payload["chopper"] = chopper_pos
