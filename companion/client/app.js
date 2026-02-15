@@ -40,6 +40,15 @@ let selectedAbility = 'bomb';
 let gameState = 'wave_active';
 let currentWave = 0;
 let radarRevealActive = false;
+let isReconnecting = false;
+let reconnectAttempt = 0;
+let reconnectTimeout = null;
+let reconnectCountdownInterval = null;
+let nextReconnectAt = 0;
+
+const RECONNECT_BASE_DELAY_MS = 1000;
+const RECONNECT_MAX_DELAY_MS = 15000;
+const UI_CONTEXT_KEY = 'companion_ui_context';
 
 // Connection quality
 let latencyMs = 0;
@@ -275,6 +284,118 @@ const abilityInfo = {
   emp: { cooldownMs: COOLDOWN_EMP_MS, maxPerWave: EMP_PER_WAVE, hint: 'Tap map to stun enemies (2s)', needsTap: true }
 };
 
+function saveUiContext() {
+  try {
+    localStorage.setItem(UI_CONTEXT_KEY, JSON.stringify({
+      selectedAbility,
+      statsPanelVisible: !statsPanel.classList.contains('hidden'),
+      currentWave,
+      gameState
+    }));
+  } catch (_) { /* ignore storage errors */ }
+}
+
+function loadUiContext() {
+  try {
+    const raw = localStorage.getItem(UI_CONTEXT_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    if (typeof parsed.selectedAbility === 'string' && abilityInfo[parsed.selectedAbility]) {
+      selectedAbility = parsed.selectedAbility;
+    }
+    if (typeof parsed.currentWave === 'number') currentWave = parsed.currentWave;
+    if (typeof parsed.gameState === 'string') gameState = parsed.gameState;
+    if (parsed.statsPanelVisible === true) statsPanel.classList.remove('hidden');
+  } catch (_) { /* ignore storage errors */ }
+}
+
+function setSelectedAbility(ability) {
+  if (!abilityInfo[ability]) return;
+  selectedAbility = ability;
+  btnBomb.classList.toggle('selected', ability === 'bomb');
+  btnSupply.classList.toggle('selected', ability === 'supply');
+  btnEmp.classList.toggle('selected', ability === 'emp');
+  btnRadar.classList.toggle('selected', ability === 'radar');
+  abilityHintEl.textContent = abilityInfo[ability].hint;
+  saveUiContext();
+}
+
+function setControlsPaused(paused) {
+  const disable = paused;
+  [btnBomb, btnSupply, btnRadar, btnEmp, minimap, document.getElementById('joystickBase')].forEach((el) => {
+    if (!el) return;
+    if (disable) el.classList.add('disabled');
+    else el.classList.remove('disabled');
+  });
+}
+
+function clearReconnectTimers() {
+  if (reconnectTimeout) clearTimeout(reconnectTimeout);
+  if (reconnectCountdownInterval) clearInterval(reconnectCountdownInterval);
+  reconnectTimeout = null;
+  reconnectCountdownInterval = null;
+}
+
+function reconnectDelayMs() {
+  const exp = Math.min(RECONNECT_MAX_DELAY_MS, RECONNECT_BASE_DELAY_MS * (2 ** reconnectAttempt));
+  const jitter = Math.floor(Math.random() * 400);
+  return Math.min(RECONNECT_MAX_DELAY_MS, exp + jitter);
+}
+
+function showReconnectCountdown() {
+  const msLeft = Math.max(0, nextReconnectAt - Date.now());
+  statusEl.textContent = `Reconnecting in ${(msLeft / 1000).toFixed(1)}s...`;
+}
+
+function startReconnectLoop() {
+  if (isReconnecting) return;
+  isReconnecting = true;
+  setControlsPaused(true);
+  connected.classList.remove('hidden');
+  waiting.classList.add('hidden');
+  reconnectBtn.classList.remove('hidden');
+  connStatusEl.innerHTML = '<span class="status-dot offline"></span> Reconnecting';
+  scheduleReconnectAttempt();
+}
+
+function scheduleReconnectAttempt() {
+  clearReconnectTimers();
+  const delay = reconnectDelayMs();
+  reconnectAttempt += 1;
+  nextReconnectAt = Date.now() + delay;
+  showReconnectCountdown();
+  reconnectCountdownInterval = setInterval(showReconnectCountdown, 100);
+  reconnectTimeout = setTimeout(() => {
+    if (!isReconnecting || ws) return;
+    openSocket();
+  }, delay);
+}
+
+function stopReconnectLoop() {
+  isReconnecting = false;
+  reconnectAttempt = 0;
+  clearReconnectTimers();
+  setControlsPaused(false);
+  reconnectBtn.classList.add('hidden');
+}
+
+function openSocket() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(proto + '//' + location.host + '/ws');
+  setupWsHandlers(ws);
+  ws.onopen = () => {
+    hideError();
+    clearReconnectTimers();
+    if (reconnectToken) {
+      ws.send(JSON.stringify({ type: 'rejoin', token: reconnectToken, role: 'companion' }));
+    } else if (sessionCode) {
+      ws.send(JSON.stringify({ type: 'join', code: sessionCode, role: 'companion' }));
+    }
+  };
+}
+
+loadUiContext();
+
 function setupWsHandlers(socket) {
   socket.onmessage = (e) => {
     let m;
@@ -285,6 +406,14 @@ function setupWsHandlers(socket) {
 
     if (m.type === 'error') {
       const msg = m.message || 'Unknown error';
+      if (msg.includes('Invalid token')) {
+        reconnectToken = null;
+        try { localStorage.removeItem('companion_reconnect_token'); } catch (_) { /* ignore */ }
+        if (ws && ws.readyState === 1 && sessionCode) {
+          ws.send(JSON.stringify({ type: 'join', code: sessionCode, role: 'companion' }));
+          return;
+        }
+      }
       if (msg.includes('Invalid code')) {
         showError('Invalid Code', 'The session code is incorrect or expired. Please create a new session.');
       } else if (msg.includes('expired')) {
@@ -302,14 +431,18 @@ function setupWsHandlers(socket) {
         localStorage.setItem('companion_reconnect_token', reconnectToken);
         localStorage.setItem('companion_session_code', sessionCode);
       } catch (_) { /* ignore storage errors */ }
+      stopReconnectLoop();
+      landing.classList.add('hidden');
+      waiting.classList.add('hidden');
+      connected.classList.remove('hidden');
+      connStatusEl.innerHTML = '<span class="status-dot online"></span> Connected';
     } else if (m.type === 'game_connected') {
       hideError();
-      bombsRemaining = BOMBS_PER_WAVE;
-      suppliesRemaining = SUPPLIES_PER_WAVE;
       minimapData = { enemies: [], allies: [], players: [] };
       waiting.classList.add('hidden');
       connected.classList.remove('hidden');
       connStatusEl.innerHTML = '<span class="status-dot online"></span> Connected';
+      stopReconnectLoop();
     } else if (m.type === 'drop_ack') {
       if (m.ability === 'bomb') {
         lastBombAt = Date.now();
@@ -361,6 +494,7 @@ function setupWsHandlers(socket) {
       // Extract wave and state if present
       if (typeof m.wave === 'number') currentWave = m.wave;
       if (typeof m.state === 'string') gameState = m.state;
+      saveUiContext();
     } else if (m.type === 'bomb_impact') {
       const isMega = m.mega === true || (m.kills >= 5);
       const kills = m.kills || 0;
@@ -390,6 +524,7 @@ function setupWsHandlers(socket) {
       playSoundEffect('supply');
     } else if (m.type === 'game_state') {
       gameState = m.state || 'wave_active';
+      saveUiContext();
     } else if (m.type === 'pong') {
       if (m.timestamp && lastPingAt) {
         latencyMs = Date.now() - lastPingAt;
@@ -398,12 +533,9 @@ function setupWsHandlers(socket) {
   };
   socket.onclose = () => {
     ws = null;
-    connected.classList.add('hidden');
-    waiting.classList.remove('hidden');
-    statusEl.innerHTML = 'Connection lost<span class="reconnecting-indicator"></span>';
-    reconnectBtn.classList.remove('hidden');
     connStatusEl.innerHTML = '<span class="status-dot offline"></span> Disconnected';
     showError('Connection Lost', 'Trying to reconnect automatically...', 6000);
+    if (sessionCode || reconnectToken) startReconnectLoop();
   };
   socket.onerror = (err) => {
     console.error('WebSocket error:', err);
@@ -425,17 +557,12 @@ startBtn.onclick = async () => {
     landing.classList.add('hidden');
     waiting.classList.remove('hidden');
     hideReconnect();
+    saveUiContext();
 
     // Show tutorial on first use
     showTutorial();
 
-    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    ws = new WebSocket(proto + '//' + location.host + '/ws');
-    setupWsHandlers(ws);
-    ws.onopen = () => {
-      hideError();
-      ws.send(JSON.stringify({ type: 'join', code: sessionCode, role: 'companion' }));
-    };
+    openSocket();
   } catch (err) {
     statusEl.textContent = 'Failed to create session. Retry?';
     showError('Connection Failed', 'Unable to create a session. Please check your internet connection and try again.');
@@ -445,6 +572,7 @@ startBtn.onclick = async () => {
 
 const statusEl = document.getElementById('status');
 function hideReconnect() {
+  clearReconnectTimers();
   reconnectBtn.classList.add('hidden');
   statusEl.textContent = 'Waiting for game...';
 }
@@ -459,18 +587,12 @@ reconnectBtn.onclick = () => {
     } catch (_) { /* ignore */ }
   }
   if (!reconnectToken && !sessionCode) return;
+  if (isReconnecting) {
+    scheduleReconnectAttempt();
+    return;
+  }
   hideReconnect();
-  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  ws = new WebSocket(proto + '//' + location.host + '/ws');
-  setupWsHandlers(ws);
-  ws.onopen = () => {
-    // Prefer token-based rejoin if we have it
-    if (reconnectToken) {
-      ws.send(JSON.stringify({ type: 'rejoin', token: reconnectToken, role: 'companion' }));
-    } else {
-      ws.send(JSON.stringify({ type: 'join', code: sessionCode, role: 'companion' }));
-    }
-  };
+  openSocket();
 };
 
 copyBtn.onclick = () => {
@@ -479,6 +601,7 @@ copyBtn.onclick = () => {
 };
 
 function canUseAbility(ability) {
+  if (isReconnecting) return false;
   // Disable abilities when not in active wave
   if (gameState !== 'wave_active') return false;
   const info = abilityInfo[ability];
@@ -663,25 +786,13 @@ minimap.addEventListener('touchend', (e) => {
 }, { passive: false });
 
 btnBomb.onclick = () => {
-  selectedAbility = 'bomb';
-  btnBomb.classList.add('selected');
-  btnSupply.classList.remove('selected');
-  btnEmp.classList.remove('selected');
-  abilityHintEl.textContent = abilityInfo.bomb.hint;
+  setSelectedAbility('bomb');
 };
 btnSupply.onclick = () => {
-  selectedAbility = 'supply';
-  btnSupply.classList.add('selected');
-  btnBomb.classList.remove('selected');
-  btnEmp.classList.remove('selected');
-  abilityHintEl.textContent = abilityInfo.supply.hint;
+  setSelectedAbility('supply');
 };
 btnEmp.onclick = () => {
-  selectedAbility = 'emp';
-  btnEmp.classList.add('selected');
-  btnBomb.classList.remove('selected');
-  btnSupply.classList.remove('selected');
-  abilityHintEl.textContent = abilityInfo.emp.hint;
+  setSelectedAbility('emp');
 };
 // Virtual joystick for helicopter control (only visible in game - companion watches TV)
 function initJoystick() {
@@ -900,6 +1011,7 @@ requestAnimationFrame(tick);
 
 btnStats.onclick = () => {
   statsPanel.classList.remove('hidden');
+  saveUiContext();
   statsContent.innerHTML = `
     Bombs Dropped: <strong>${stats.totalBombs}</strong><br>
     Total Kills: <strong>${stats.totalKills}</strong><br>
@@ -913,7 +1025,23 @@ btnStats.onclick = () => {
 
 btnCloseStats.onclick = () => {
   statsPanel.classList.add('hidden');
+  saveUiContext();
 };
+
+if (!statsPanel.classList.contains('hidden')) saveUiContext();
+
+// Restore connection/session state for seamless resume.
+try {
+  if (!reconnectToken) reconnectToken = localStorage.getItem('companion_reconnect_token');
+  if (!sessionCode) sessionCode = localStorage.getItem('companion_session_code');
+} catch (_) { /* ignore storage errors */ }
+setSelectedAbility(selectedAbility);
+if (sessionCode || reconnectToken) {
+  if (sessionCode) codeEl.textContent = sessionCode;
+  landing.classList.add('hidden');
+  waiting.classList.remove('hidden');
+  startReconnectLoop();
+}
 
 btnToggleSound.onclick = () => {
   soundEnabled = !soundEnabled;

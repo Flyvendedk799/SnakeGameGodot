@@ -25,6 +25,7 @@ const MAX_MSG_SIZE = 4096;
 const RATE_LIMIT_MSGS = 50;
 const RATE_LIMIT_WINDOW_MS = 10000;
 const SESSION_EXPIRY_MS = 2 * 60 * 60 * 1000; // 2 hours
+const RECONNECT_GRACE_MS = 30 * 1000;
 
 app.use(express.static(path.join(__dirname, 'client')));
 
@@ -46,7 +47,8 @@ app.get('/session/create', (req, res) => {
     lastSupplyAt: 0,
     lastRadarAt: 0,
     lastEmpAt: 0,
-    reconnectToken: token
+    reconnectToken: token,
+    emptySince: null
   });
   res.json({ code, token });
 });
@@ -107,14 +109,9 @@ wss.on('connection', (ws) => {
         ws.role = msg.role === 'game' ? 'game' : msg.role === 'companion' ? 'companion' : null;
         if (!ws.role) return;
         ws.code = code;
+        s.emptySince = null;
         if (ws.role === 'game') s.game = ws;
-        else if (ws.role === 'companion') {
-          s.companion = ws;
-          s.dropsThisWave = 0;
-          s.suppliesThisWave = 0;
-          s.radarsThisWave = 0;
-          s.empsThisWave = 0;
-        }
+        else if (ws.role === 'companion') s.companion = ws;
         safeSend(ws, { type: 'joined', code, token: s.reconnectToken });
         if (s.game && s.companion) {
           safeSend(s.game, { type: 'companion_connected' });
@@ -145,14 +142,9 @@ wss.on('connection', (ws) => {
         ws.role = msg.role === 'game' ? 'game' : msg.role === 'companion' ? 'companion' : null;
         if (!ws.role) return;
         ws.code = foundCode;
+        foundSession.emptySince = null;
         if (ws.role === 'game') foundSession.game = ws;
-        else if (ws.role === 'companion') {
-          foundSession.companion = ws;
-          foundSession.dropsThisWave = 0;
-          foundSession.suppliesThisWave = 0;
-          foundSession.radarsThisWave = 0;
-          foundSession.empsThisWave = 0;
-        }
+        else if (ws.role === 'companion') foundSession.companion = ws;
         safeSend(ws, { type: 'joined', code: foundCode, token: foundSession.reconnectToken });
         if (foundSession.game && foundSession.companion) {
           safeSend(foundSession.game, { type: 'companion_connected' });
@@ -198,6 +190,7 @@ wss.on('connection', (ws) => {
           s.dropsThisWave = 0;
           s.suppliesThisWave = 0;
           s.radarsThisWave = 0;
+          s.empsThisWave = 0;
           if (s.companion) safeSend(s.companion, { type: 'new_wave' });
         }
       } else if (t === 'minimap' && ws.role === 'game' && ws.code) {
@@ -230,7 +223,7 @@ wss.on('connection', (ws) => {
       if (s) {
         if (ws.role === 'game') s.game = null;
         else if (ws.role === 'companion') s.companion = null;
-        if (!s.game && !s.companion) sessions.delete(ws.code);
+        if (!s.game && !s.companion) s.emptySince = Date.now();
       }
     }
   });
@@ -250,6 +243,10 @@ const expiryInterval = setInterval(() => {
     if (now - s.createdAt > SESSION_EXPIRY_MS) {
       if (s.game) s.game.terminate?.();
       if (s.companion) s.companion.terminate?.();
+      sessions.delete(code);
+      continue;
+    }
+    if (!s.game && !s.companion && s.emptySince && (now - s.emptySince > RECONNECT_GRACE_MS)) {
       sessions.delete(code);
     }
   }
