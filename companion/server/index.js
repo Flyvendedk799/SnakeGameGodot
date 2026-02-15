@@ -456,6 +456,7 @@ wss.on('connection', (ws) => {
   ws.on('message', (raw) => {
     const now = Date.now();
     const ingressAt = now;
+    let t;
     if (raw.length > MAX_MSG_SIZE) {
       logEvent('ws_message_too_large', { role: ws.role, code: ws.code, size: raw.length });
       return;
