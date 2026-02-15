@@ -63,9 +63,11 @@ func emit_speed_streak(x: float, y: float, dir: Vector2, color: Color):
 	particles.append(p)
 
 func _enforce_limit(incoming: int):
-	if particles.size() + incoming > MAX_PARTICLES:
-		var excess = (particles.size() + incoming) - MAX_PARTICLES
-		particles = particles.slice(excess)
+	if particles.size() + incoming <= MAX_PARTICLES:
+		return
+	var excess = (particles.size() + incoming) - MAX_PARTICLES
+	for i in range(excess):
+		particles.pop_front()
 
 func update(dt: float):
 	var alive: Array = []

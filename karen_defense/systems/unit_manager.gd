@@ -73,8 +73,9 @@ func hire_unit(unit_type: String, player_index: int = 0, split: bool = false) ->
 	var ally = AllyEntity.new()
 	ally.initialize(unit_type, stats)
 	ally.owner_player_index = 0
-	ally.rally_point = game.map.get_fort_center()
-	ally.position = game.map.get_fort_center() + Vector2(randf_range(-30, 30), randf_range(-30, 30))
+	var rally = game.map.get_player_anchor() if game.map.has_method("get_player_anchor") else game.map.get_fort_center()
+	ally.rally_point = rally
+	ally.position = rally + Vector2(randf_range(-30, 30), randf_range(-30, 30))
 	game.ally_container.add_child(ally)
 	if game.sfx:
 		game.sfx.play_purchase()
@@ -110,7 +111,7 @@ func _on_outside_ally_exiting(ally_ref: AllyEntity):
 		outside_allies.erase(pi)
 
 func regroup_all():
-	var center = game.map.get_fort_center()
+	var center = game.map.get_player_anchor() if game.map.has_method("get_player_anchor") else game.map.get_fort_center()
 	for ally in game.ally_container.get_children():
 		ally.regroup(center)
 

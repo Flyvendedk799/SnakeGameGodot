@@ -3,38 +3,104 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+  <meta name="description" content="Karen Defense Companion Mode - Support your team with tactical abilities">
   <title>Karen Defense Companion</title>
   <link rel="stylesheet" href="style.css">
 </head>
-<body>
-  <div id="landing">
+<body role="application" aria-label="Karen Defense Companion Application">
+  <!-- Error Toast -->
+  <div id="errorToast" class="hidden" style="position: fixed; top: 2rem; left: 50%; transform: translateX(-50%); background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%); color: white; padding: 1rem 1.5rem; border-radius: 12px; box-shadow: 0 8px 24px rgba(239, 68, 68, 0.4); z-index: 2000; max-width: 90%; animation: slideDown 0.3s ease;">
+    <div style="display: flex; align-items: center; gap: 0.75rem;">
+      <span style="font-size: 1.5rem;">⚠️</span>
+      <div>
+        <div id="errorTitle" style="font-weight: 700; margin-bottom: 0.25rem;"></div>
+        <div id="errorMessage" style="font-size: 0.9rem; opacity: 0.9;"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="landing" role="main">
     <h1>Karen Defense</h1>
     <p>Companion Mode</p>
-    <button id="start">Start as Companion</button>
+    <button id="start" aria-label="Start as companion player">Start as Companion</button>
   </div>
-  <div id="waiting" class="hidden">
+  <div id="waiting" class="hidden" role="main">
     <p>Share this code:</p>
-    <p id="code"></p>
-    <button id="copy">Copy</button>
-    <p id="status">Waiting for game...</p>
-    <button id="reconnect" class="hidden">Reconnect</button>
+    <p id="code" aria-label="Session code" role="status"></p>
+    <button id="copy" aria-label="Copy session code to clipboard">Copy</button>
+    <p id="status" role="status" aria-live="polite">Waiting for game...</p>
+    <button id="reconnect" class="hidden" aria-label="Reconnect to session">Reconnect</button>
   </div>
-  <div id="connected" class="hidden">
-    <p id="connStatus"><span class="status-dot online"></span> Connected</p>
-    <div id="abilityRow">
-      <button id="btnBomb" class="ability-btn selected" data-ability="bomb" title="2 per wave, 30s cooldown">
-        <span class="ability-icon">💣</span>
-        <span>Bomb</span>
+  <div id="connected" class="hidden" role="main">
+    <p id="connStatus" role="status" aria-live="polite"><span class="status-dot online"></span> Connected</p>
+    <p id="waveInfo" style="margin: 0.25rem 0; font-size: 0.95rem;" role="status" aria-live="polite"></p>
+    <div id="abilityRow" role="group" aria-label="Companion abilities">
+      <button id="btnBomb" class="ability-btn selected" data-ability="bomb" aria-label="Bomb ability: Drop explosive on enemies. 2 per wave, 30 second cooldown" tabindex="0">
+        <span class="ability-badge" id="badgeBomb" aria-label="2 remaining">2</span>
+        <span class="ability-icon" aria-hidden="true">💣</span>
+        <span class="ability-name">Bomb</span>
+        <span class="ability-cooldown" id="cdBomb" aria-live="polite"></span>
       </button>
-      <button id="btnSupply" class="ability-btn" data-ability="supply" title="1 per wave, 45s cooldown">
-        <span class="ability-icon">📦</span>
-        <span>Supply</span>
+      <button id="btnSupply" class="ability-btn" data-ability="supply" aria-label="Supply drop: Repairs and gold for team. 1 per wave, 45 second cooldown" tabindex="0">
+        <span class="ability-badge" id="badgeSupply" aria-label="1 remaining">1</span>
+        <span class="ability-icon" aria-hidden="true">📦</span>
+        <span class="ability-name">Supply</span>
+        <span class="ability-cooldown" id="cdSupply" aria-live="polite"></span>
+      </button>
+      <button id="btnRadar" class="ability-btn" data-ability="radar" aria-label="Radar ping: Reveal all enemies for 5 seconds. 1 per wave, 60 second cooldown" tabindex="0">
+        <span class="ability-badge" id="badgeRadar" aria-label="1 remaining">1</span>
+        <span class="ability-icon" aria-hidden="true">📡</span>
+        <span class="ability-name">Radar</span>
+        <span class="ability-cooldown" id="cdRadar" aria-live="polite"></span>
+      </button>
+      <button id="btnEmp" class="ability-btn" data-ability="emp" aria-label="EMP: Stun enemies in area for 2 seconds. 1 per wave, 90 second cooldown" tabindex="0">
+        <span class="ability-badge" id="badgeEmp" aria-label="1 remaining">1</span>
+        <span class="ability-icon" aria-hidden="true">⚡</span>
+        <span class="ability-name">EMP</span>
+        <span class="ability-cooldown" id="cdEmp" aria-live="polite"></span>
       </button>
     </div>
-    <p id="abilityHint">Tap map to drop bomb (repairs + gold)</p>
-    <canvas id="minimap" width="300" height="300"></canvas>
-    <p id="cooldown"></p>
-    <p id="remaining"></p>
+    <p id="abilityHint" role="status">Tap map to drop bomb (repairs + gold)</p>
+    <canvas id="minimap" width="300" height="300" aria-label="Tactical minimap showing enemy and ally positions. Tap to deploy selected ability" role="img"></canvas>
+
+    <!-- Impact History Timeline -->
+    <div id="impactHistory" style="margin: 1rem 0; min-height: 80px;">
+      <div style="font-size: 0.85rem; color: #9a8aca; margin-bottom: 0.5rem; font-weight: 600;">Recent Impact</div>
+      <div id="historyList" style="display: flex; flex-direction: column; gap: 0.4rem;"></div>
+    </div>
+
+    <p id="cooldown" role="status" aria-live="polite"></p>
+    <p id="remaining" role="status" aria-live="polite"></p>
+    <div style="display: flex; gap: 0.5rem; margin-top: 1rem;">
+      <button id="btnStats" style="min-width: 100px; background: #3a3050;" aria-label="View companion statistics" tabindex="0">Stats</button>
+      <button id="btnToggleSound" style="min-width: 100px; background: #3a3050;" aria-label="Toggle sound effects on or off" tabindex="0">Sound: On</button>
+    </div>
+    <div id="statsPanel" class="hidden" style="margin-top: 1rem; padding: 1rem; background: rgba(0,0,0,0.3); border-radius: 8px; max-width: 320px;">
+      <h3 style="margin-top: 0;">Companion Stats</h3>
+      <p id="statsContent" style="font-size: 0.9rem; line-height: 1.6;"></p>
+      <button id="btnCloseStats" style="min-width: 100px;">Close</button>
+    </div>
+  </div>
+  <!-- Tutorial Overlay -->
+  <div id="tutorialOverlay" class="hidden" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0, 0, 0, 0.9); z-index: 1000; display: flex; align-items: center; justify-content: center; padding: 2rem;">
+    <div style="max-width: 400px; background: linear-gradient(135deg, #2a1f3a 0%, #1a1520 100%); padding: 2rem; border-radius: 20px; border: 2px solid #6a5a8a; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);">
+      <div id="tutorialStep1">
+        <h2 style="margin-bottom: 1rem; color: #ff8cff;">Step 1: Connect 🎮</h2>
+        <p style="margin-bottom: 1.5rem; line-height: 1.6;">Share the code shown on this screen with your game. In Karen Defense, press <strong>Options</strong> menu and enter the code in <strong>Companion Mode</strong>.</p>
+        <button id="tutorialNext1" style="width: 100%; margin: 0;">Next →</button>
+      </div>
+      <div id="tutorialStep2" class="hidden">
+        <h2 style="margin-bottom: 1rem; color: #80c0ff;">Step 2: Choose & Drop 💣</h2>
+        <p style="margin-bottom: 1.5rem; line-height: 1.6;">Select an ability (Bomb, Supply, Radar, or EMP), then <strong>tap the minimap</strong> to deploy it. Watch the cooldown timer on each button!</p>
+        <button id="tutorialNext2" style="width: 100%; margin: 0;">Next →</button>
+      </div>
+      <div id="tutorialStep3" class="hidden">
+        <h2 style="margin-bottom: 1rem; color: #80ff90;">Step 3: Track Impact 📊</h2>
+        <p style="margin-bottom: 1.5rem; line-height: 1.6;">See your kills and impact in real-time! The minimap pulses when abilities hit. Check your stats anytime with the <strong>Stats</strong> button.</p>
+        <button id="tutorialDone" style="width: 100%; margin: 0;">Got it! ✨</button>
+      </div>
+      <button id="tutorialSkip" style="position: absolute; top: 1rem; right: 1rem; min-width: auto; padding: 0.5rem 1rem; background: rgba(255, 255, 255, 0.1); border: 1px solid rgba(255, 255, 255, 0.2); font-size: 0.85rem;">Skip</button>
+    </div>
   </div>
   <script src="app.js"></script>
 </body>

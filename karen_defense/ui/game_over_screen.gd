@@ -22,7 +22,8 @@ func show_menu(victory: bool = false):
 	is_victory = victory
 	hover_index = -1
 	kb_index = 0
-	options = ["World Select", "Quit to Launcher"] if victory else ["Try Again", "Quit to Launcher"]
+	var is_main_game = game != null and game.get("world_select") == null
+	options = (["Level Select", "Quit to Launcher"] if is_main_game else ["World Select", "Quit to Launcher"]) if victory else ["Try Again", "Quit to Launcher"]
 	fade_alpha = 0.0
 
 func hide_menu():
@@ -69,15 +70,17 @@ func _select_option(index: int):
 	match index:
 		0:
 			if is_victory:
-				# Unlock next world and return to world select
-				var next_id = game.current_map_id + 1
-				if next_id <= 3:
-					var unlocks = SaveManager.load_unlocks()
-					SaveManager.unlock_world(next_id, unlocks)
 				hide_menu()
-				game.state = game.GameState.WORLD_SELECT
-				game.world_select.show_select()
-				game._update_visibility()
+				if game.get("world_select") != null:
+					var next_id = game.current_map_id + 1
+					if next_id <= 3:
+						var unlocks = SaveManager.load_unlocks()
+						SaveManager.unlock_world(next_id, unlocks)
+					game.state = game.GameState.WORLD_SELECT
+					game.world_select.show_select()
+					game._update_visibility()
+				else:
+					get_tree().change_scene_to_file("res://main_game/ui/level_select.tscn")
 			else:
 				hide_menu()
 				game.restart_game()
@@ -102,10 +105,12 @@ func _draw():
 
 	# Title graphic
 	if is_victory:
-		draw_string(font, Vector2(0, 140), "WORLD %d COMPLETE!" % game.current_map_id, HORIZONTAL_ALIGNMENT_CENTER, 1280, 44, Color(0.3, 1.0, 0.5, alpha))
+		var level_label = "LEVEL" if game.get("world_select") == null else "WORLD"
+		draw_string(font, Vector2(0, 140), "%s %d COMPLETE!" % [level_label, game.current_map_id], HORIZONTAL_ALIGNMENT_CENTER, 1280, 44, Color(0.3, 1.0, 0.5, alpha))
 		var next_id = game.current_map_id + 1
-		if next_id <= 3:
-			draw_string(font, Vector2(0, 195), "World %d unlocked!" % next_id, HORIZONTAL_ALIGNMENT_CENTER, 1280, 20, Color(0.8, 0.9, 0.7, alpha))
+		var max_levels = 5 if game.get("world_select") == null else 3
+		if next_id <= max_levels:
+			draw_string(font, Vector2(0, 195), ("Level %d " if game.get("world_select") == null else "World %d ") % next_id + "unlocked!", HORIZONTAL_ALIGNMENT_CENTER, 1280, 20, Color(0.8, 0.9, 0.7, alpha))
 		else:
 			draw_string(font, Vector2(0, 195), "You beat them all, dude!", HORIZONTAL_ALIGNMENT_CENTER, 1280, 20, Color(0.8, 0.9, 0.7, alpha))
 	elif tex_gameover:

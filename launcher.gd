@@ -3,7 +3,7 @@ extends Node2D
 const SCREEN_W = 1280
 const SCREEN_H = 720
 
-var options: Array[String] = ["Karen Defense", "Snake Game"]
+var options: Array[String] = ["Main Game", "Karen Defense", "Snake Game"]
 var hover_index: int = -1
 var kb_index: int = 0
 var anim_time: float = 0.0
@@ -58,6 +58,8 @@ func _input(event):
 			_launch_game(0)
 		elif event.keycode == KEY_2:
 			_launch_game(1)
+		elif event.keycode == KEY_3:
+			_launch_game(2)
 
 func _get_button_rect(index: int) -> Rect2:
 	var btn_w = 380.0
@@ -69,8 +71,10 @@ func _get_button_rect(index: int) -> Rect2:
 func _launch_game(index: int):
 	match index:
 		0:
-			get_tree().change_scene_to_file("res://karen_defense/karen_defense.tscn")
+			get_tree().change_scene_to_file("res://main_game/ui/level_select.tscn")
 		1:
+			get_tree().change_scene_to_file("res://karen_defense/karen_defense.tscn")
+		2:
 			get_tree().change_scene_to_file("res://main.tscn")
 
 func _draw():
@@ -123,7 +127,7 @@ func _draw():
 		draw_string(font, Vector2(rect.position.x + rect.size.x / 2 - 110, rect.position.y + rect.size.y / 2 + 8), prefix + "[%d] %s" % [i + 1, options[i]], HORIZONTAL_ALIGNMENT_CENTER, 240, 22, text_col)
 
 	# Footer with controller-friendly hint
-	draw_string(font, Vector2(SCREEN_W / 2.0 - 200, SCREEN_H - 50), "D-Pad/Stick: Navigate  |  Cross/Space: Select  |  1/2: Shortcut", HORIZONTAL_ALIGNMENT_CENTER, 400, 12, Color8(110, 105, 130))
+	draw_string(font, Vector2(SCREEN_W / 2.0 - 200, SCREEN_H - 50), "D-Pad/Stick: Navigate  |  Cross/Space: Select  |  1/2/3: Shortcut", HORIZONTAL_ALIGNMENT_CENTER, 400, 12, Color8(110, 105, 130))
 
 func _draw_pill(rect: Rect2, color: Color):
 	var r = minf(rect.size.y / 2.0, 6.0)

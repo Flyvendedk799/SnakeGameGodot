@@ -275,7 +275,11 @@ func _find_nearest_enemy_any_distance(game) -> EnemyEntity:
 			if dist_to_me > OUTSIDE_ALLY_SEEK_RANGE:
 				continue
 		else:
-			if enemy.position.distance_to(game.map.get_fort_center()) > MAX_SEEK_DISTANCE:
+			if game.map.has_method("get_player_anchor"):
+				var anchor = game.map.get_player_anchor()
+				if enemy.position.x < anchor.x - 350 or enemy.position.x > anchor.x + 550:
+					continue
+			elif enemy.position.distance_to(game.map.get_fort_center()) > MAX_SEEK_DISTANCE:
 				continue
 		if dist_to_me < best_dist:
 			best_dist = dist_to_me
@@ -285,7 +289,7 @@ func _find_nearest_enemy_any_distance(game) -> EnemyEntity:
 func _find_best_enemy(game) -> EnemyEntity:
 	var best: EnemyEntity = null
 	var best_score: float = 999999.0
-	var center_x = 640.0  # Map center — enemies closer to center are higher threat
+	var center_x = game.map.get_player_anchor().x if game.map.has_method("get_player_anchor") else 640.0
 	var max_seek_from_ally = detect_range * 2.0 if is_outside_ally else detect_range * 1.5
 	for enemy in game.enemy_container.get_children():
 		if not _is_valid_target(enemy):

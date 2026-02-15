@@ -6,6 +6,7 @@ const SCREEN_H = 720
 enum GameState { WORLD_SELECT, TITLE, WAVE_ACTIVE, BETWEEN_WAVES, PAUSED, LEVEL_UP, GAME_OVER }
 var state: GameState = GameState.WORLD_SELECT
 var previous_state: GameState = GameState.TITLE
+var _last_companion_state: String = ""
 
 # Child references
 var map: FortMap
@@ -102,13 +103,16 @@ var helicopter_entity: Node2D
 # Per-frame cache for ally target selection (avoids O(n*m) iteration)
 var ally_target_counts: Dictionary = {}
 
+# Radar reveal timer
+var radar_reveal_timer: float = 0.0
+
 # Companion minimap broadcast throttle
 var _companion_minimap_timer: float = 0.0
 const COMPANION_MINIMAP_INTERVAL: float = 0.15
 
-# Companion action HUD notification (text + timer)
-var companion_action_text: String = ""
-var companion_action_timer: float = 0.0
+# Companion action HUD notification (array of {text, timer})
+var companion_action_feed: Array = []
+const MAX_COMPANION_ACTIONS: int = 3
 
 func _ready():
 	particles = ParticleSystem.new()
@@ -320,8 +324,15 @@ func _process(delta):
 		_update_camera_follow(delta)
 	if wave_announce_timer > 0:
 		wave_announce_timer -= delta
-	if companion_action_timer > 0:
-		companion_action_timer -= delta
+	if radar_reveal_timer > 0:
+		radar_reveal_timer -= delta
+	# Update companion action feed timers
+	var i = companion_action_feed.size() - 1
+	while i >= 0:
+		companion_action_feed[i].timer -= delta
+		if companion_action_feed[i].timer <= 0:
+			companion_action_feed.remove_at(i)
+		i -= 1
 	# Update chromatic aberration
 	if chromatic_intensity > 0.05:
 		chromatic_intensity = lerpf(chromatic_intensity, 0.0, delta * 8.0)
@@ -346,7 +357,8 @@ func _process(delta):
 				var enemies_arr: Array = []
 				for e in enemy_container.get_children():
 					if e.state in [EnemyEntity.EnemyState.DEAD, EnemyEntity.EnemyState.DYING]: continue
-					enemies_arr.append([e.position.x / w, e.position.y / h])
+					# Include boss flag as third element
+					enemies_arr.append([e.position.x / w, e.position.y / h, e.is_boss])
 				var allies_arr: Array = []
 				for a in ally_container.get_children():
 					if a.current_hp <= 0: continue
@@ -356,11 +368,35 @@ func _process(delta):
 					players_arr.append([player_node.position.x / w, player_node.position.y / h])
 				if p2_joined and player2_node and not player2_node.is_dead:
 					players_arr.append([player2_node.position.x / w, player2_node.position.y / h])
-				companion_session.send_minimap(enemies_arr, allies_arr, players_arr)
+				# Include wave number in minimap payload
+				companion_session.send_minimap_with_state(enemies_arr, allies_arr, players_arr, current_wave, _last_companion_state)
 
 	_update_visibility()
+	_update_companion_game_state()
 	if state != GameState.WORLD_SELECT:
 		queue_redraw()
+
+func _update_companion_game_state():
+	"""Send game state to companion when it changes."""
+	if not companion_session or not companion_session.is_session_connected():
+		return
+	var state_name := ""
+	match state:
+		GameState.WAVE_ACTIVE:
+			state_name = "wave_active"
+		GameState.BETWEEN_WAVES:
+			state_name = "between_waves"
+		GameState.PAUSED:
+			state_name = "paused"
+		GameState.LEVEL_UP:
+			state_name = "level_up"
+		GameState.GAME_OVER:
+			state_name = "game_over"
+		_:
+			state_name = "other"
+	if state_name != _last_companion_state:
+		_last_companion_state = state_name
+		companion_session.send_game_state(state_name)
 
 func _process_title(delta):
 	title_time += delta
@@ -430,6 +466,9 @@ func _process_wave(delta):
 				_on_companion_supply_landed(landed_pos)
 		elif proj is HelicopterBombEntity:
 			pass
+		elif proj is EmpEffectEntity:
+			if proj.update_effect(delta):
+				proj.queue_free()
 		else:
 			proj.update_projectile(delta)
 	for gold in gold_container.get_children():
@@ -544,8 +583,7 @@ func start_wave():
 
 func _on_companion_bomb_drop(x: float, y: float):
 	if state != GameState.WAVE_ACTIVE or wave_complete_pending: return
-	companion_action_text = "Companion: Bomb inbound!"
-	companion_action_timer = 2.5
+	_add_companion_action("Companion: Bomb inbound!")
 	var map = self.map
 	var wx = map.FORT_LEFT + x * (map.FORT_RIGHT - map.FORT_LEFT)
 	var wy = map.FORT_TOP + y * (map.FORT_BOTTOM - map.FORT_TOP)
@@ -558,8 +596,7 @@ func _on_companion_bomb_drop(x: float, y: float):
 
 func _on_companion_supply_drop(x: float, y: float):
 	if state != GameState.WAVE_ACTIVE or wave_complete_pending: return
-	companion_action_text = "Companion: Supply drop incoming!"
-	companion_action_timer = 2.5
+	_add_companion_action("Companion: Supply drop incoming!")
 	var map = self.map
 	var wx = map.FORT_LEFT + x * (map.FORT_RIGHT - map.FORT_LEFT)
 	var wy = map.FORT_TOP + y * (map.FORT_BOTTOM - map.FORT_TOP)
@@ -568,8 +605,8 @@ func _on_companion_supply_drop(x: float, y: float):
 	projectile_container.add_child(supply)
 
 func _on_companion_bomb_landed(pos: Vector2, kills: int):
-	companion_action_text = "Companion bomb: %d kills!" % kills if kills > 0 else "Companion bomb landed!"
-	companion_action_timer = 2.0
+	var text = "Companion bomb: %d kills!" % kills if kills > 0 else "Companion bomb landed!"
+	_add_companion_action(text)
 	if companion_session:
 		var m = map
 		var nx = (pos.x - m.FORT_LEFT) / maxf(m.FORT_RIGHT - m.FORT_LEFT, 1.0)
@@ -577,8 +614,7 @@ func _on_companion_bomb_landed(pos: Vector2, kills: int):
 		companion_session.send_bomb_impact(nx, ny, kills)
 
 func _on_companion_supply_landed(pos: Vector2):
-	companion_action_text = "Companion supply: Repairs + gold!"
-	companion_action_timer = 2.0
+	_add_companion_action("Companion supply: Repairs + gold!")
 	if companion_session:
 		var m = map
 		var nx = (pos.x - m.FORT_LEFT) / maxf(m.FORT_RIGHT - m.FORT_LEFT, 1.0)
@@ -754,6 +790,8 @@ func enable_companion_session() -> void:
 	add_child(companion_session)
 	companion_session.bomb_drop_requested_at_normalized.connect(_on_companion_bomb_drop)
 	companion_session.supply_drop_requested_at_normalized.connect(_on_companion_supply_drop)
+	companion_session.emp_drop_requested_at_normalized.connect(_on_companion_emp_drop)
+	companion_session.radar_ping_requested.connect(_on_companion_radar_ping)
 	world_select._on_companion_session_ready()
 
 func disable_companion_session() -> void:
@@ -1055,3 +1093,26 @@ func _begin_screen_draw():
 func _end_screen_draw():
 	"""Reset drawing transform back to world space."""
 	draw_set_transform(Vector2.ZERO, 0, Vector2.ONE)
+
+func _add_companion_action(text: String):
+	"""Add action to companion feed (newest on top)."""
+	if companion_action_feed.size() >= MAX_COMPANION_ACTIONS:
+		companion_action_feed.pop_back()
+	companion_action_feed.push_front({ "text": text, "timer": 3.0 })
+
+func _on_companion_emp_drop(x: float, y: float):
+	if state != GameState.WAVE_ACTIVE or wave_complete_pending: return
+	_add_companion_action("Companion: EMP deployed!")
+	var m = self.map
+	var wx = m.FORT_LEFT + x * (m.FORT_RIGHT - m.FORT_LEFT)
+	var wy = m.FORT_TOP + y * (m.FORT_BOTTOM - m.FORT_TOP)
+	var emp = EmpEffectEntity.new()
+	emp.setup(self, Vector2(wx, wy))
+	projectile_container.add_child(emp)
+
+func _on_companion_radar_ping():
+	if state != GameState.WAVE_ACTIVE or wave_complete_pending: return
+	radar_reveal_timer = 5.0
+	_add_companion_action("Companion: Radar active!")
+	if sfx:
+		sfx.play_repair()  # Use existing sound for now

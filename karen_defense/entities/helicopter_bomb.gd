@@ -49,8 +49,18 @@ func _explode():
 			if enemy.state == EnemyEntity.EnemyState.DYING:
 				kills += 1
 			game.spawn_damage_number(enemy.position, str(dmg), Color8(255, 180, 50))
-	game.particles.emit_burst(bomb_ground_pos.x, bomb_ground_pos.y, Color8(255, 160, 30), 20, 0.6)
-	game.start_shake(5.0, 0.2)
+
+	# Mega strike celebration for 5+ kills
+	var is_mega = kills >= 5
+	if is_mega:
+		game.spawn_damage_number(bomb_ground_pos, "MEGA STRIKE!", Color8(255, 100, 255))
+		game.particles.emit_burst(bomb_ground_pos.x, bomb_ground_pos.y, Color8(255, 100, 255), 30, 0.8)
+		game.start_shake(8.0, 0.3)
+		game.start_chromatic(12.0)
+	else:
+		game.particles.emit_burst(bomb_ground_pos.x, bomb_ground_pos.y, Color8(255, 160, 30), 20, 0.6)
+		game.start_shake(5.0, 0.2)
+
 	if game.sfx:
 		game.sfx.play_grenade_explode()
 	if game.companion_session:

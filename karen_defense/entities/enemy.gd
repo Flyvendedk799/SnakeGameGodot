@@ -294,7 +294,10 @@ func die(game, drop_loot: bool = true):
 	if drop_loot:
 		var credit_player = last_damager if (last_damager and is_instance_valid(last_damager)) else game.player_node
 		var gold_mult: float = credit_player.enemy_gold_mult if credit_player else 1.0
-		var direct_gold: int = int(gold_value * gold_mult)
+		var zone_mult: float = 1.0
+		if game.map and game.map.has_method("get_zone_gold_mult"):
+			zone_mult = game.map.get_zone_gold_mult(position)
+		var direct_gold: int = int(gold_value * gold_mult * zone_mult)
 		var credit_index: int = 0
 		if credit_player and credit_player == game.player2_node:
 			credit_index = 1
@@ -305,7 +308,7 @@ func die(game, drop_loot: bool = true):
 		if randf() < 0.20:
 			var gold = GoldDrop.new()
 			gold.position = position
-			gold.amount = direct_gold
+			gold.amount = int(direct_gold)
 			gold.player_index_hint = credit_index
 			game.gold_container.add_child(gold)
 		game.progression.add_xp_for_player(credit_index, xp_value)

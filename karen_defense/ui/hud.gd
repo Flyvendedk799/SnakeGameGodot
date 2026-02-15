@@ -433,16 +433,28 @@ func _draw_join_prompt(font: Font):
 	elif not game.p2_joined and game.state != game.GameState.TITLE and game.state != game.GameState.GAME_OVER:
 		var join_alpha = 0.4 + 0.2 * sin(anim_time * 2.0)
 		_draw_rounded_panel(Rect2(390, 690, 500, 24), Color(0, 0, 0, join_alpha), Color(0.5, 0.5, 0.6, join_alpha * 0.3), 4.0)
-		draw_string(font, Vector2(390, 708), "Player 2: Press Cross on controller to join!", HORIZONTAL_ALIGNMENT_CENTER, 500, 12, Color(0.7, 0.7, 0.78, join_alpha + 0.3))
+		draw_string(font, Vector2(390, 708), "Player 2: Press F2 or Cross (P2 controller) to join!", HORIZONTAL_ALIGNMENT_CENTER, 500, 12, Color(0.7, 0.7, 0.78, join_alpha + 0.3))
 
 func _draw_companion_action(font: Font):
-	if game.companion_action_timer <= 0 or game.companion_action_text.is_empty():
+	if game.companion_action_feed.is_empty():
 		return
-	var alpha = clampf(game.companion_action_timer / 0.5, 0.0, 1.0)
 	var cx = 640.0
-	var cy = 86.0
-	_draw_rounded_panel(Rect2(cx - 160, cy - 16, 320, 32), Color(0.15, 0.08, 0.2, 0.9 * alpha), Color(0.6, 0.4, 0.9, 0.5 * alpha), 6.0)
-	draw_string(font, Vector2(cx - 160, cy + 4), game.companion_action_text, HORIZONTAL_ALIGNMENT_CENTER, 320, 14, Color(0.9, 0.8, 1.0, alpha))
+	var cy_start = 86.0
+	var i = 0
+	for action in game.companion_action_feed:
+		var alpha = clampf(action.timer / 0.5, 0.0, 1.0)
+		var cy = cy_start + i * 36
+		var scale_offset = (1.0 - alpha) * 10.0 if action.timer < 0.3 else 0.0
+		_draw_rounded_panel(Rect2(cx - 160, cy - 16 + scale_offset, 320, 32), Color(0.15, 0.08, 0.2, 0.9 * alpha), Color(0.6, 0.4, 0.9, 0.5 * alpha), 6.0)
+		draw_string(font, Vector2(cx - 160, cy + 4 + scale_offset), action.text, HORIZONTAL_ALIGNMENT_CENTER, 320, 14, Color(0.9, 0.8, 1.0, alpha))
+		i += 1
+
+	# D-pad hint for helicopter following
+	var show_heli_hint = game.companion_session and game.companion_session.is_session_connected() and game.helicopter_entity and is_instance_valid(game.helicopter_entity)
+	if show_heli_hint:
+		var hint_y = cy_start + game.companion_action_feed.size() * 36
+		var hint_alpha = 0.7 + 0.2 * sin(anim_time * 2.0)
+		draw_string(font, Vector2(cx - 160, hint_y + 8), "Hold D-pad Up to follow helicopter", HORIZONTAL_ALIGNMENT_CENTER, 320, 11, Color(0.7, 0.9, 1.0, hint_alpha))
 
 func _draw_hints(font: Font):
 	if hint_reveal <= 0.01:
@@ -559,6 +571,7 @@ func _draw_minimap():
 	# Draw enemies (red dots) - cap at 64 to avoid draw spam in huge waves
 	const MAX_ENEMY_DOTS := 64
 	var enemy_drawn := 0
+	var radar_active = game.radar_reveal_timer > 0
 	for enemy in game.enemy_container.get_children():
 		if enemy_drawn >= MAX_ENEMY_DOTS:
 			break
@@ -577,6 +590,10 @@ func _draw_minimap():
 		elif enemy.is_bomber:
 			dot_col = Color8(255, 160, 50, 200)
 		draw_circle(Vector2(ex, ey), dot_size, dot_col)
+		# Radar pulse effect
+		if radar_active:
+			var pulse_size = dot_size + 2 + sin(anim_time * 8.0) * 1.0
+			draw_circle(Vector2(ex, ey), pulse_size, Color8(100, 200, 255, 120), false, 1.0)
 
 	# Draw allies (blue dots)
 	for ally in game.ally_container.get_children():
@@ -616,6 +633,22 @@ func _draw_minimap():
 	# Label
 	var font = ThemeDB.fallback_font
 	draw_string(font, Vector2(mm_x, mm_y - 6), "MINIMAP", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color8(160, 150, 180, 200))
+
+	# Companion status badge (if companion mode enabled)
+	if game.companion_session:
+		var badge_x = mm_x + mm_size - 2
+		var badge_y = mm_y - 6
+		var is_connected = game.companion_session.is_session_connected()
+		var badge_text = "Companion" if is_connected else "Companion"
+		var badge_status = " ●" if is_connected else " ○"
+		var badge_col = Color8(100, 220, 120) if is_connected else Color8(140, 140, 160)
+		var dot_col = Color8(80, 255, 100) if is_connected else Color8(100, 100, 120)
+		draw_string(font, Vector2(badge_x, badge_y), badge_text, HORIZONTAL_ALIGNMENT_RIGHT, -1, 9, badge_col)
+		draw_circle(Vector2(badge_x + 4, badge_y - 4), 3, dot_col)
+		if is_connected:
+			# Subtle pulse on the green dot
+			var pulse = 0.3 + 0.2 * sin(anim_time * 3.0)
+			draw_circle(Vector2(badge_x + 4, badge_y - 4), 4, Color(0.5, 1.0, 0.6, pulse), false, 1.0)
 
 func _draw_barrier_hint(font: Font):
 	if game.current_wave < 1 or game.current_wave > 3:
