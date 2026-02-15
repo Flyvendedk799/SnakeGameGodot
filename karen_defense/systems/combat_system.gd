@@ -46,9 +46,14 @@ func _check_player_melee_hits():
 			var dist = p.position.distance_to(enemy.position)
 			if dist > p.melee_range:
 				continue
+			# Main Game: melee only hits same-tier enemies
+			if game.has_method("can_deal_damage_to") and not game.can_deal_damage_to(p, enemy):
+				continue
 			var angle_to_enemy = (enemy.position - p.position).angle()
 			var angle_diff = _angle_diff(angle_to_enemy, p.facing_angle)
-			if angle_diff < effective_arc / 2.0:
+			# Side-view: restrict to front-facing cone (±0.5 rad); top-down: use full arc
+			var arc_half = 0.5 if _is_sideview(game) else effective_arc / 2.0
+			if angle_diff < arc_half:
 				var dmg = int(p.melee_damage * dmg_mult)
 				var is_crit = randf() < p.crit_chance
 				if is_crit:
@@ -86,7 +91,7 @@ func _check_projectile_hits():
 		if proj is ExplosionEffect:
 			continue
 		# Skip companion entities (no source property)
-		if proj is HelicopterBombEntity or proj is SupplyDropEntity:
+		if proj is HelicopterBombEntity or proj is SupplyDropEntity or proj is CompanionHelicopterEntity:
 			continue
 		if proj.source == "player":
 			for enemy in game.enemy_container.get_children():
@@ -155,6 +160,9 @@ func _check_gold_pickups():
 				break
 		if picked:
 			continue
+
+func _is_sideview(game) -> bool:
+	return game != null and game.map != null and game.map.has_method("resolve_sideview_collision")
 
 func _angle_diff(a: float, b: float) -> float:
 	var diff = fmod(a - b + PI, TAU)

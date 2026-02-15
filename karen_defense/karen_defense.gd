@@ -370,8 +370,10 @@ func _process(delta):
 					players_arr.append([player_node.position.x / w, player_node.position.y / h])
 				if p2_joined and player2_node and not player2_node.is_dead:
 					players_arr.append([player2_node.position.x / w, player2_node.position.y / h])
-				# Include wave number in minimap payload
-				companion_session.send_minimap_with_state(enemies_arr, allies_arr, players_arr, current_wave, _last_companion_state)
+				var chopper_pos = null
+				if companion_helicopter and is_instance_valid(companion_helicopter):
+					chopper_pos = [companion_helicopter.position.x / w, companion_helicopter.position.y / h]
+				companion_session.send_minimap_with_state(enemies_arr, allies_arr, players_arr, current_wave, _last_companion_state, chopper_pos)
 
 	_update_visibility()
 	_update_companion_game_state()
@@ -467,6 +469,8 @@ func _process_wave(delta):
 			if landed_pos is Vector2:
 				_on_companion_supply_landed(landed_pos)
 		elif proj is HelicopterBombEntity:
+			pass
+		elif proj is CompanionHelicopterEntity:
 			pass
 		elif proj is EmpEffectEntity:
 			if proj.update_effect(delta):

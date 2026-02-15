@@ -203,7 +203,7 @@ wss.on('connection', (ws) => {
       } else if (t === 'minimap' && ws.role === 'game' && ws.code) {
         const s = sessions.get(ws.code);
         if (s && s.companion) {
-          const fwd = { type: 'minimap', enemies: msg.enemies || [], allies: msg.allies || [], players: msg.players || [] };
+          const fwd = { type: 'minimap', enemies: msg.enemies || [], allies: msg.allies || [], players: msg.players || [], wave: msg.wave, state: msg.state, chopper: msg.chopper };
           safeSend(s.companion, fwd);
         }
       } else if (t === 'bomb_impact' && ws.role === 'game' && ws.code) {

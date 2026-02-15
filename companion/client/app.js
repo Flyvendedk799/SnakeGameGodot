@@ -354,7 +354,8 @@ function setupWsHandlers(socket) {
       minimapData = {
         enemies: Array.isArray(m.enemies) ? m.enemies : [],
         allies: Array.isArray(m.allies) ? m.allies : [],
-        players: Array.isArray(m.players) ? m.players : []
+        players: Array.isArray(m.players) ? m.players : [],
+        chopper: Array.isArray(m.chopper) ? m.chopper : null
       };
       minimapLerpT = 0; // Reset lerp for smooth transition
       // Extract wave and state if present
@@ -565,6 +566,16 @@ function drawMinimap() {
     c.beginPath();
     c.arc(px, py, 3, 0, Math.PI * 2);
     c.fill();
+  }
+  if (minimapData.chopper) {
+    const [px, py] = toPx(minimapData.chopper[0], minimapData.chopper[1]);
+    c.fillStyle = 'rgba(200, 180, 80, 1)';
+    c.strokeStyle = 'rgba(255, 220, 100, 0.9)';
+    c.lineWidth = 1.5;
+    c.beginPath();
+    c.arc(px, py, 4, 0, Math.PI * 2);
+    c.fill();
+    c.stroke();
   }
 
   if (impactFlash) {

@@ -111,10 +111,12 @@ func send_minimap(enemies: Array, allies: Array, players: Array):
 	var payload = { type = "minimap", enemies = enemies, allies = allies, players = players }
 	_ws.send_text(JSON.stringify(payload))
 
-func send_minimap_with_state(enemies: Array, allies: Array, players: Array, wave: int, state: String):
+func send_minimap_with_state(enemies: Array, allies: Array, players: Array, wave: int, state: String, chopper_pos = null):
 	if _ws == null or _ws.get_ready_state() != WebSocketPeer.STATE_OPEN:
 		return
 	var payload = { type = "minimap", enemies = enemies, allies = allies, players = players, wave = wave, state = state }
+	if chopper_pos != null:
+		payload["chopper"] = chopper_pos
 	_ws.send_text(JSON.stringify(payload))
 
 func send_bomb_impact(nx: float, ny: float, kills: int):
