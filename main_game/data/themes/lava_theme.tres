@@ -1,0 +1,21 @@
+[gd_resource type="Resource" script_class="ThemeConfig" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://main_game/data/theme_config.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+theme_name = "lava"
+palette = {
+"accent1": Color(0.313726, 0.137255, 0.0784314, 1),
+"accent2": Color(0.372549, 0.215686, 0.176471, 1),
+"ground": Color(0.235294, 0.137255, 0.0980392, 1),
+"sky": Color(0.235294, 0.0784314, 0.0588235, 1)
+}
+outline_color = Color(0.1, 0.08, 0.15, 0.8)
+outline_width = 1.5
+particle_primary = Color(1, 0.470588, 0.235294, 1)
+particle_secondary = Color(1, 0.784314, 0.313726, 1)
+saturation_boost = 1.08
+lighting_direction = Vector3(0, 1, 0.4)
+lighting_intensity = 0.4
+ambient_color = Color(0.8, 0.35, 0.2, 1)

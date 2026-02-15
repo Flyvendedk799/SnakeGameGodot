@@ -75,8 +75,12 @@ func _draw():
 	var cam_pos = game.game_camera.position
 	var pal = THEMES.get(theme_name, THEMES["grass"])
 
+	# AAA Upgrade: Y-depth based parallax adjustment
+	var player_y = game.player_node.position.y if game.player_node else cam_pos.y
+	var depth_factor = DepthPlanes.get_parallax_factor_for_y(player_y)
+
 	# Sky gradient (vertical bands)
-	var offset0 = -cam_pos * 0.9
+	var offset0 = -cam_pos * (0.9 * depth_factor)
 	var sky_left = offset0.x - 400
 	var sky_w = level_width + 1600
 	var strip_h = 20.0
@@ -125,8 +129,8 @@ func _draw():
 		draw_rect(Rect2(cx + w * 0.15, cy - h * 0.4, w * 0.5, h * 0.6), cloud_col)
 		draw_rect(Rect2(cx + w * 0.4, cy - h * 0.2, w * 0.4, h * 0.4), cloud_col)
 
-	# Distant mountains/silhouettes (parallax ~0.3)
-	var offset1 = -cam_pos * 0.3
+	# Distant mountains/silhouettes (parallax ~0.3 with depth adjustment)
+	var offset1 = -cam_pos * (0.3 * depth_factor)
 	var hill_h = level_height * 0.65
 	for i in range(int(level_width / 90) + 6):
 		var bx = offset1.x + i * 90.0 + fmod(cam_pos.x * 0.03, 90)
@@ -146,7 +150,7 @@ func _draw():
 	_draw_depth_fog(offset0, 0.40)
 
 	# Mid-ground hills (parallax ~0.5)
-	var offset2 = -cam_pos * 0.5
+	var offset2 = -cam_pos * (0.5 * depth_factor)
 	for i in range(int(level_width / 65) + 8):
 		var bx = offset2.x + i * 65.0 + fmod(cam_pos.x * 0.06, 65)
 		var by = level_height - hill_h * (0.32 + 0.28 * sin(i * 0.5 + 1))
@@ -166,7 +170,7 @@ func _draw():
 	_draw_depth_fog(offset0, 0.20)
 
 	# Near hills (parallax ~0.7) - more density
-	var offset3 = -cam_pos * 0.7
+	var offset3 = -cam_pos * (0.7 * depth_factor)
 	for i in range(int(level_width / 35) + 14):
 		var bx = offset3.x + i * 35.0 + fmod(cam_pos.x * 0.1, 35)
 		var by = level_height - hill_h * (0.28 + 0.32 * sin(i * 0.4 + 2))
@@ -200,7 +204,7 @@ func _draw():
 	_draw_depth_fog(offset0, 0.05)
 
 	# Foreground foliage/props (parallax ~0.9) - DENSER
-	var offset4 = -cam_pos * 0.9
+	var offset4 = -cam_pos * (0.9 * depth_factor)
 	var fg_count = int(level_width / 55) + 12
 	for i in range(fg_count):
 		var fx = offset4.x + i * 55.0 + fmod(cam_pos.x * 0.15, 55)

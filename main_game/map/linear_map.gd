@@ -72,6 +72,11 @@ var _decor_props: Array = []
 var _decor_pipes: Array = []   # Metal pipes/drains (Shantae-style foreground)
 var _decor_posts: Array = []   # Wooden dock pilings
 
+# Terrain fill (AAA upgrade - complete map appearance)
+var _floor_fill_rects: Array[Rect2] = []
+var _ceiling_fill_rects: Array[Rect2] = []
+var _wall_fill_rects: Array[Rect2] = []
+
 func setup(game_ref, level_id: int):
 	game = game_ref
 	level_config = LinearMapConfig.get_level(level_id)
@@ -117,6 +122,7 @@ func _setup_from_config():
 	_build_grapple_anchors()
 	_build_chain_links()
 	_build_procedural_decor()
+	_build_terrain_fill()  # AAA upgrade - fill gaps for complete maps
 
 	# Load procedural terrain textures for current theme
 	var theme = level_config.get("theme", "grass")
@@ -213,6 +219,51 @@ func _build_procedural_decor():
 			"seed": d.get("seed", rng.randi()),
 			"explicit": true
 		})
+
+func _build_terrain_fill():
+	"""AAA Upgrade: Fill gaps between platforms and level bounds for complete maps."""
+	_floor_fill_rects.clear()
+	_ceiling_fill_rects.clear()
+	_wall_fill_rects.clear()
+
+	# FLOOR FILL: Connect floor_rects to level bottom
+	for floor in floor_rects:
+		var fill_depth = level_height - (floor.position.y + floor.size.y)
+		if fill_depth > 5:  # Only fill significant gaps
+			_floor_fill_rects.append(Rect2(
+				floor.position.x,
+				floor.position.y + floor.size.y,
+				floor.size.x,
+				fill_depth
+			))
+
+	# CEILING FILL: Connect top platforms to level top
+	for plat in platform_rects:
+		if plat.position.y < level_height * 0.4:  # Upper half platforms
+			var fill_depth = plat.position.y
+			if fill_depth > 5:
+				_ceiling_fill_rects.append(Rect2(
+					plat.position.x,
+					0,
+					plat.size.x,
+					fill_depth
+				))
+
+	# WALL FILL: Vertical edges
+	if floor_rects.size() > 0:
+		var leftmost = floor_rects[0].position.x
+		var rightmost = floor_rects[0].position.x + floor_rects[0].size.x
+		for floor in floor_rects:
+			leftmost = minf(leftmost, floor.position.x)
+			rightmost = maxf(rightmost, floor.position.x + floor.size.x)
+
+		# Left wall from top to bottom
+		if leftmost > 50:
+			_wall_fill_rects.append(Rect2(0, 0, leftmost, level_height))
+
+		# Right wall
+		if rightmost < level_width - 50:
+			_wall_fill_rects.append(Rect2(rightmost, 0, level_width - rightmost, level_height))
 
 func _build_collision():
 	floor_rects.clear()
@@ -554,6 +605,17 @@ func _get_pit_rects() -> Array:
 			pits.append(Rect2(gap_start, pit_top, gap_end - gap_start, pit_bottom - pit_top))
 	return pits
 
+func _get_theme_fill_color(theme: String) -> Color:
+	"""AAA Upgrade: Theme-specific fill colors for terrain completion."""
+	match theme:
+		"grass": return Color8(75, 95, 60)
+		"cave": return Color8(45, 40, 50)
+		"sky": return Color8(120, 140, 160)
+		"summit": return Color8(160, 165, 175)
+		"lava": return Color8(60, 35, 25)
+		"ice": return Color8(140, 160, 180)
+		_: return Color8(80, 80, 90)
+
 func _draw():
 	# Skip full background when ParallaxBackdrop is active (it draws themed sky/hills)
 	var use_parallax = game != null and "parallax_backdrop" in game and game.parallax_backdrop != null
@@ -579,6 +641,40 @@ func _draw():
 		draw_rect(Rect2(pit.position.x + 8, pit.position.y, pit.size.x - 16, pit.size.y), pit_col.darkened(0.25))
 		# Top edge shadow
 		draw_rect(Rect2(pit.position.x, pit.position.y, pit.size.x, 8), Color(0, 0, 0, 0.4))
+
+	# AAA Upgrade: Terrain fill - complete map appearance
+	var fill_color = _get_theme_fill_color(theme)
+
+	# Floor fill (below floor segments to level bottom)
+	for rect in _floor_fill_rects:
+		draw_rect(rect, fill_color)
+		# Add texture overlay if available
+		if terrain_texture:
+			var tile_size = 64.0
+			var tiles_x = int(ceil(rect.size.x / tile_size))
+			var tiles_y = int(ceil(rect.size.y / tile_size))
+			for ty in range(tiles_y):
+				for tx in range(tiles_x):
+					var tile_x = rect.position.x + tx * tile_size
+					var tile_y = rect.position.y + ty * tile_size
+					var tile_w = min(tile_size, rect.position.x + rect.size.x - tile_x)
+					var tile_h = min(tile_size, rect.position.y + rect.size.y - tile_y)
+					draw_texture_rect_region(terrain_texture,
+						Rect2(tile_x, tile_y, tile_w, tile_h),
+						Rect2(0, 0, tile_w, tile_h),
+						Color(0.8, 0.8, 0.8, 1.0))  # Slightly darker
+		# Top edge shadow (blend with floor segment)
+		draw_rect(Rect2(rect.position.x, rect.position.y, rect.size.x, 8), Color(0, 0, 0, 0.3))
+
+	# Ceiling fill (above upper platforms to level top)
+	for rect in _ceiling_fill_rects:
+		draw_rect(rect, fill_color.darkened(0.2))
+		# Bottom edge shadow
+		draw_rect(Rect2(rect.position.x, rect.position.y + rect.size.y - 6, rect.size.x, 6), Color(0, 0, 0, 0.25))
+
+	# Wall fill (vertical edges)
+	for rect in _wall_fill_rects:
+		draw_rect(rect, fill_color.darkened(0.15))
 
 	var pal = _get_theme_colors()
 	var floor_fill: Color = pal[0]

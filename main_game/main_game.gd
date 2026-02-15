@@ -3,6 +3,13 @@ extends Node2D
 const SCREEN_W = 1280
 const SCREEN_H = 720
 
+# AAA Camera Ease Functions
+func ease_out_expo(x: float) -> float:
+	return 1.0 if x >= 1.0 else 1.0 - pow(2.0, -10.0 * x)
+
+func ease_out_spring(x: float, amplitude: float = 1.3, frequency: float = 3.0) -> float:
+	return 1.0 - (cos(x * PI * frequency) * exp(-x * amplitude))
+
 enum GameState { LEVEL_ACTIVE, CHECKPOINT_SHOP, PAUSED, LEVEL_UP, GAME_OVER, VICTORY, WAVE_ACTIVE = 0, TITLE = 99, WORLD_SELECT = 98, BETWEEN_WAVES = 6 }
 var state: GameState = GameState.LEVEL_ACTIVE
 var previous_state: GameState = GameState.LEVEL_ACTIVE
@@ -33,10 +40,11 @@ var pause_menu: PauseMenu
 var game_over_screen: GameOverScreen
 
 var sfx: KarenSfxPlayer
+var fx_manager: FXManager  # AAA Upgrade: Unified FX coordinator
 var particles: ParticleSystem
 var game_camera: Camera2D = null
 var camera_base_zoom: float = 1.0
-var camera_rotation_angle: float = 0.15  # ~8.6 degrees - subtle tilt for depth (was 0.35, too much)
+var camera_rotation_angle: float = 0.28  # ~16 degrees - stronger 3D tilt for depth
 
 var player2_node: PlayerEntity = null
 var p2_joined: bool = false
@@ -45,11 +53,19 @@ var ally_target_counts: Dictionary = {}
 var damage_numbers: Array = []
 var time_elapsed: float = 0.0
 
+enum ShakeCurve { LINEAR, EASE_OUT_QUAD, EASE_OUT_EXPO }
 var shake_intensity: float = 0.0
 var shake_duration: float = 0.0
 var shake_timer: float = 0.0
 var shake_offset: Vector2 = Vector2.ZERO
+var shake_curve: ShakeCurve = ShakeCurve.EASE_OUT_QUAD
 var hitstop_timer: float = 0.0
+
+# Camera zoom pulse (AAA upgrade)
+var camera_zoom_pulse: float = 0.0  # -0.02 to +0.02 range
+var camera_zoom_velocity: float = 0.0
+const CAMERA_DEADZONE_X: float = 40.0
+const CAMERA_DEADZONE_Y: float = 25.0
 var radar_reveal_timer: float = 0.0  # HUD minimap compatibility (Karen Defense radar)
 var combo_meter: float = 0.0  # HUD combo display compatibility (Karen Defense)
 var combo_level: int = 0
@@ -167,6 +183,12 @@ func _build_scene_tree():
 	sfx = KarenSfxPlayer.new()
 	sfx.name = "SFX"
 	add_child(sfx)
+
+	# AAA Upgrade: FX Manager for unified visual feedback
+	fx_manager = FXManager.new()
+	fx_manager.name = "FXManager"
+	add_child(fx_manager)
+	fx_manager.setup(self)
 
 	var ui_layer = CanvasLayer.new()
 	ui_layer.name = "UILayer"
@@ -311,6 +333,17 @@ func _process(delta):
 			return
 
 	_update_shake(delta)
+
+	# Camera zoom pulse spring physics (AAA upgrade)
+	if absf(camera_zoom_pulse) > 0.001:
+		var spring_force = -camera_zoom_pulse * 25.0
+		camera_zoom_velocity += spring_force * delta
+		camera_zoom_velocity *= exp(-8.0 * delta)
+		camera_zoom_pulse += camera_zoom_velocity * delta
+	else:
+		camera_zoom_pulse = 0.0
+		camera_zoom_velocity = 0.0
+
 	if chromatic_intensity > 0.05:
 		chromatic_intensity = lerpf(chromatic_intensity, 0.0, delta * 8.0)
 	if level_intro_timer > 0:
@@ -421,9 +454,12 @@ func _update_linear_camera(delta: float):
 		var lookahead_x = 60.0 if anchor.last_move_dir.x > 0.1 else -40.0
 		target = Vector2(anchor.position.x + lookahead_x, anchor.position.y)
 
-	# Allow vertical camera follow for platformer levels (was locking Y when dy < 90)
+	# Apply camera dead zone (reduce jitter from micro-adjustments)
+	var dx = target.x - game_camera.position.x
 	var dy = target.y - game_camera.position.y
-	if absf(dy) < 25:
+	if absf(dx) < CAMERA_DEADZONE_X:
+		target.x = game_camera.position.x
+	if absf(dy) < CAMERA_DEADZONE_Y:
 		target.y = game_camera.position.y
 
 	var half_w = (get_viewport_rect().size.x / 2.0) / maxf(zoom_target.x, 0.1)
@@ -431,8 +467,24 @@ func _update_linear_camera(delta: float):
 	target.x = clampf(target.x, half_w, map.level_width - half_w)
 	target.y = clampf(target.y, half_h, map.level_height - half_h)
 
-	game_camera.position = game_camera.position.lerp(target, delta * 6.0)
-	game_camera.zoom = game_camera.zoom.lerp(zoom_target, delta * 4.0)
+	# Apply zoom pulse to zoom target
+	var pulse_zoom = Vector2(1.0 + camera_zoom_pulse, 1.0 + camera_zoom_pulse)
+	zoom_target *= pulse_zoom
+
+	# Smooth camera follow with ease curves for AAA feel
+	var follow_speed = 8.0  # Increased from 6.0 for snappier tracking
+	var ease_factor = ease_out_expo(delta * follow_speed)
+	game_camera.position = game_camera.position.lerp(target, ease_factor)
+
+	# Zoom with spring ease
+	var zoom_ease = ease_out_spring(delta * 5.0)
+	game_camera.zoom = game_camera.zoom.lerp(zoom_target, zoom_ease)
+
+func trigger_camera_zoom_pulse(intensity: float):
+	"""Trigger camera zoom pulse with spring physics.
+	intensity: -1.0 (zoom in) to 1.0 (zoom out)"""
+	camera_zoom_pulse = intensity * 0.02
+	camera_zoom_velocity = 0.0
 
 func _on_level_complete():
 	state = GameState.VICTORY
@@ -464,8 +516,12 @@ func resume_from_shop():
 	shop_menu.hide_menu()
 	checkpoint_manager.on_shop_closed()
 
-func start_hitstop(duration: float):
+func start_hitstop(duration: float, intensity: float = 1.0):
+	"""AAA Upgrade: Enhanced hitstop with variable intensity.
+	intensity: 0.5 (light) to 2.0 (heavy) - affects timescale."""
 	hitstop_timer = duration
+	var timescale = lerpf(0.25, 0.05, clampf(intensity - 0.5, 0.0, 1.5) / 1.5)
+	Engine.time_scale = timescale
 
 func spawn_damage_number(pos: Vector2, text: String, color: Color):
 	if damage_numbers.size() >= 40:
@@ -482,10 +538,12 @@ func spawn_damage_number(pos: Vector2, text: String, color: Color):
 		"drift_speed": randf_range(2.0, 4.0),
 	})
 
-func start_shake(intensity: float, duration: float):
+func start_shake(intensity: float, duration: float, curve: ShakeCurve = ShakeCurve.EASE_OUT_QUAD):
+	"""AAA Upgrade: Enhanced screen shake with decay curves."""
 	shake_intensity = intensity
 	shake_duration = duration
 	shake_timer = duration
+	shake_curve = curve
 
 func trigger_landing_impact():
 	"""Called by player on hard landings - screen shake for juice."""
@@ -497,7 +555,18 @@ func start_chromatic(intensity: float):
 func _update_shake(delta):
 	if shake_timer > 0:
 		shake_timer -= delta
-		var progress = shake_timer / shake_duration
+		var t = shake_timer / shake_duration
+
+		# AAA Upgrade: Apply curve to shake decay
+		var progress = t
+		match shake_curve:
+			ShakeCurve.EASE_OUT_QUAD:
+				progress = t * t
+			ShakeCurve.EASE_OUT_EXPO:
+				progress = pow(2.0, -10.0 * (1.0 - t)) if t < 1.0 else 0.0
+			_:  # LINEAR
+				progress = t
+
 		var ci = shake_intensity * progress
 		shake_offset = Vector2(randf_range(-ci, ci), randf_range(-ci, ci))
 		game_layer.position = shake_offset

@@ -1,0 +1,32 @@
+[gd_resource type="Resource" script_class="AnimationConfig" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://main_game/systems/animation_config.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+squash_spring_strength = 180.0
+squash_damping = 12.0
+squash_min = 0.3
+squash_max = 1.8
+landing_squash_light = 0.75
+landing_squash_medium = 0.65
+landing_squash_heavy = 0.55
+landing_recovery_time = 0.25
+jump_anticipation_squash = 0.85
+jump_anticipation_time = 0.05
+jump_launch_squash = 1.3
+jump_apex_squash = 1.12
+attack_anticipation_squash = 0.9
+attack_anticipation_time = 0.05
+attack_strike_squash = 1.35
+attack_recovery_time = 0.12
+walk_frequency = 8.0
+walk_bob_amplitude = 2.5
+walk_hip_sway = 1.5
+idle_frequency = 2.0
+idle_amplitude = 1.2
+spawn_scale_start = 0.8
+spawn_duration = 0.25
+landing_ease = 5
+jump_ease = 4
+attack_ease = 3

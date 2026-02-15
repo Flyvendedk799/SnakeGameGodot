@@ -1,0 +1,21 @@
+[gd_resource type="Resource" script_class="ThemeConfig" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://main_game/data/theme_config.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+theme_name = "cave"
+palette = {
+"accent1": Color(0.215686, 0.196078, 0.243137, 1),
+"accent2": Color(0.372549, 0.333333, 0.352941, 1),
+"ground": Color(0.176471, 0.156863, 0.196078, 1),
+"sky": Color(0.0705882, 0.0588235, 0.109804, 1)
+}
+outline_color = Color(0.1, 0.08, 0.15, 0.8)
+outline_width = 1.5
+particle_primary = Color(0.627451, 0.54902, 0.705882, 1)
+particle_secondary = Color(0.470588, 0.392157, 0.54902, 1)
+saturation_boost = 1.08
+lighting_direction = Vector3(0, -1, 0.3)
+lighting_intensity = 0.2
+ambient_color = Color(0.25, 0.22, 0.35, 1)

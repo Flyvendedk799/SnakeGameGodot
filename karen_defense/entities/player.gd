@@ -72,7 +72,7 @@ const JUMP_FORCE = -380.0
 const DROP_THROUGH_DURATION = 0.2
 const COYOTE_TIME: float = 0.1
 const JUMP_BUFFER_TIME: float = 0.15
-const AIR_CONTROL_MULT: float = 0.85
+const AIR_CONTROL_MULT: float = 0.90  # AAA Upgrade: Increased for snappier mid-air control
 
 # Double jump
 var air_jump_count: int = 0
@@ -258,6 +258,15 @@ var impact_rings: Array = []  # {offset, radius, color, width, timer, max_timer}
 var melee_slash_trails: Array = []  # {offset, color, scale, timer}
 var landing_dust_timer: float = 0.0
 var wall_slide_sparks: Array = []
+
+# AAA Animation upgrade - enhanced animation states
+var landing_recovery_timer: float = 0.0
+var landing_target_squash: float = 1.0
+var jump_state: String = "none"  # "anticipation", "launch", "apex", "fall"
+var jump_phase_timer: float = 0.0
+var jump_queued: bool = false  # Queue jump during anticipation
+var melee_attack_phase: String = "none"  # "anticipation", "strike", "recovery"
+var melee_phase_timer: float = 0.0
 
 func _ready():
 	if player_index == 1:
@@ -790,9 +799,16 @@ func _handle_movement_sideview(delta: float, game):
 			is_on_ground = false
 			coyote_timer = 0
 			air_jump_count = 0
-			squash_factor = 1.25
+			var config = AnimationConfig.get_config()
+			squash_factor = config.jump_launch_squash
+			jump_state = "launch"
+			# AAA Upgrade: Camera zoom pulse on jump
+			if game.has_method("trigger_camera_zoom_pulse"):
+				game.trigger_camera_zoom_pulse(-0.5)
 			if game.sfx:
 				game.sfx.play_jump()
+			if game.particles:
+				game.particles.emit_ring(position.x, position.y + BODY_RADIUS, Color8(180, 220, 255), 10)
 		elif has_double_jump and air_jump_count < max_air_jumps:
 			velocity.y = JUMP_FORCE * 0.85
 			air_jump_count += 1
@@ -807,6 +823,21 @@ func _handle_movement_sideview(delta: float, game):
 		velocity.y += GRAVITY * 0.15 * delta
 	else:
 		velocity.y += GRAVITY * delta
+
+	# AAA Upgrade: Jump state tracking (apex and fall detection)
+	if not is_on_ground:
+		var config = AnimationConfig.get_config()
+		# Apex detection (float at top of jump)
+		if absf(velocity.y) < 50 and jump_state != "apex":
+			jump_state = "apex"
+			squash_factor = lerpf(squash_factor, config.jump_apex_squash, delta * 8.0)
+		# Fall detection
+		elif velocity.y > 100 and jump_state != "fall":
+			jump_state = "fall"
+			squash_factor = lerpf(squash_factor, 1.05, delta * 5.0)
+	else:
+		if jump_state != "none":
+			jump_state = "none"
 
 	# Jump apex squash
 	if not is_on_ground and velocity.y > -50 and velocity.y < 50:
@@ -858,19 +889,41 @@ func _handle_movement_sideview(delta: float, game):
 		if game.sfx:
 			game.sfx.play_jump()
 
-	# Landing effects
+	# AAA Upgrade: Enhanced landing effects with ease curves and recovery
 	if is_on_ground and not was_on_ground and velocity.y > 50:
-		squash_factor = 0.7
+		var config = AnimationConfig.get_config()
 		var impact_strength = clampf(velocity.y / 400.0, 0.3, 1.0)
-		spawn_impact_ring(Vector2(0, 22), 40.0 * impact_strength, Color(0.8, 0.75, 0.6, 0.6), 2.0)
-		if impact_strength > 0.6 and game.has_method("trigger_landing_impact"):
-			game.trigger_landing_impact()
+
+		# Determine squash intensity based on impact
+		if impact_strength < 0.5:
+			squash_factor = config.landing_squash_light
+		elif impact_strength < 0.75:
+			squash_factor = config.landing_squash_medium
+		else:
+			squash_factor = config.landing_squash_heavy
+
+		landing_recovery_timer = config.landing_recovery_time
+		landing_target_squash = 1.0
+
+		# Enhanced particle effects
+		spawn_impact_ring(Vector2(0, 22), 50.0 * impact_strength, Color(0.9, 0.85, 0.7, 0.7), 3.0)
+		if impact_strength > 0.6:
+			if game.has_method("trigger_landing_impact"):
+				game.trigger_landing_impact()
+			# Camera zoom pulse on heavy landing
+			if game.has_method("trigger_camera_zoom_pulse"):
+				game.trigger_camera_zoom_pulse(1.0)
+
 		if game.sfx:
 			game.sfx.play_land()
+
 		if game.particles:
-			var dust_count = int(12 * impact_strength) + 4
-			var dust_color = Color8(160, 150, 135)
+			var dust_count = int(18 * impact_strength) + 6
+			var dust_color = Color8(180, 170, 155)
 			game.particles.emit_directional(position.x, position.y + BODY_RADIUS, Vector2.UP, dust_color, dust_count)
+			# Add dust ring on heavier impacts
+			if impact_strength > 0.5:
+				game.particles.emit_ring(position.x, position.y + BODY_RADIUS, dust_color.lightened(0.2), int(8 * impact_strength))
 
 func _handle_facing():
 	# Right stick aiming (controller)
@@ -1057,14 +1110,15 @@ func _handle_combat(delta, game):
 
 func _do_melee_attack(game):
 	var cfg = COMBO_CONFIGS[combo_index]
+	var anim_config = AnimationConfig.get_config()
 	melee_timer = melee_cooldown_base * attack_cooldown_multiplier * (0.7 + combo_index * 0.15)
 	is_attacking_melee = true
 	melee_hit_done = false
 	melee_attack_timer = cfg.duration + ANTICIPATION_DURATION + RECOVERY_DURATION
-	# Start in anticipation phase
+	# AAA Upgrade: Start in anticipation phase with config values
 	melee_attack_phase = "anticipation"
-	melee_phase_timer = ANTICIPATION_DURATION
-	squash_factor = 0.85  # Pull-back
+	melee_phase_timer = anim_config.attack_anticipation_time
+	squash_factor = anim_config.attack_anticipation_squash
 	if game.sfx:
 		game.sfx.play_combo_hit(combo_index)
 	# Advance combo
@@ -1231,22 +1285,27 @@ func _update_dash_trail(delta: float):
 func _update_timers(delta):
 	if is_attacking_melee:
 		melee_attack_timer -= delta
-		# Melee attack phases
+		var config = AnimationConfig.get_config()
+		# AAA Upgrade: Enhanced melee attack phases with AnimationConfig
 		if melee_attack_phase == "anticipation":
 			melee_phase_timer -= delta
-			squash_factor = lerpf(squash_factor, 0.85, delta * 20.0)
+			squash_factor = lerpf(squash_factor, config.attack_anticipation_squash, delta * 20.0)
 			if melee_phase_timer <= 0:
 				melee_attack_phase = "strike"
 				melee_phase_timer = melee_attack_timer  # Remaining time is strike
-				squash_factor = 1.3
+				squash_factor = config.attack_strike_squash
+				# Camera punch on strike
+				if game and game.has_method("start_shake"):
+					game.start_shake(3.0, 0.08)
 		elif melee_attack_phase == "strike":
 			melee_phase_timer -= delta
-			if melee_phase_timer <= 0 or melee_attack_timer <= RECOVERY_DURATION:
+			if melee_phase_timer <= 0 or melee_attack_timer <= config.attack_recovery_time:
 				melee_attack_phase = "recovery"
-				melee_phase_timer = RECOVERY_DURATION
+				melee_phase_timer = config.attack_recovery_time
 		elif melee_attack_phase == "recovery":
 			melee_phase_timer -= delta
-			squash_factor = lerpf(squash_factor, 1.0, delta * 15.0)
+			var progress = 1.0 - (melee_phase_timer / config.attack_recovery_time)
+			squash_factor = lerpf(squash_factor, 1.0, AnimationConfig.apply_ease(progress, config.attack_ease) * delta * 20.0)
 		if melee_attack_timer <= 0:
 			is_attacking_melee = false
 			melee_attack_phase = "none"
@@ -1448,11 +1507,20 @@ func apply_skill(skill_id: String, game = null):
 # --- Visual juice helpers ---
 
 func _update_squash(delta: float):
-	var force = (1.0 - squash_factor) * 180.0
+	# AAA Upgrade: Use AnimationConfig parameters
+	var config = AnimationConfig.get_config()
+	var force = (1.0 - squash_factor) * config.squash_spring_strength
 	squash_velocity += force * delta
-	squash_velocity *= exp(-12.0 * delta)
+	squash_velocity *= exp(-config.squash_damping * delta)
 	squash_factor += squash_velocity * delta
-	squash_factor = clampf(squash_factor, 0.3, 1.8)  # Prevent extreme visual glitches
+	squash_factor = clampf(squash_factor, config.squash_min, config.squash_max)
+
+	# Landing recovery with ease curve
+	if landing_recovery_timer > 0:
+		landing_recovery_timer -= delta
+		var progress = 1.0 - (landing_recovery_timer / config.landing_recovery_time)
+		var ease_progress = AnimationConfig.apply_ease(progress, config.landing_ease)
+		squash_factor = lerpf(squash_factor, landing_target_squash, ease_progress * delta * 20.0)
 
 func _update_trail(delta: float):
 	trail_timer += delta
@@ -1581,11 +1649,10 @@ func _draw():
 		shadow_alpha = clampf(0.35 + y_factor * 0.1, 0.25, 0.45)  # Fade far shadows
 
 	var shadow_w = 90.0 * shadow_pulse * shadow_depth_scale
-	var shadow_h = 24.0 * shadow_pulse * shadow_depth_scale
 	if has_dino_mount:
 		shadow_w *= 1.4
-		shadow_h *= 1.3
-	_draw_shadow_ellipse(Rect2(-shadow_w / 2 + shadow_offset_x, shadow_offset_y, shadow_w, shadow_h), Color(0, 0, 0, shadow_alpha))
+	# AAA Upgrade: Use soft shadow with depth-based parameters
+	_draw_shadow_soft(shadow_w / 2, position.y, shadow_pulse, shadow_offset_x, shadow_offset_y)
 
 	# Flip based on facing direction
 	var flip = facing_angle < -PI / 2.0 or facing_angle > PI / 2.0
@@ -2258,26 +2325,33 @@ func _draw_oval(center: Vector2, w: float, h: float, rot: float, col: Color):
 		pts.append(center + pt)
 	draw_colored_polygon(pts, col)
 
+func _draw_shadow_soft(body_radius: float, depth_y: float, pulse: float = 1.0, offset_x: float = 0.0, offset_y: float = 26.0):
+	"""AAA Upgrade: 5-layer gradient shadow with depth-based scaling for soft, natural falloff."""
+	var shadow_alpha = DepthPlanes.get_shadow_alpha_for_y(depth_y)
+	var shadow_scale = DepthPlanes.get_shadow_scale_for_y(depth_y)
+	var shadow_offset = Vector2(offset_x, offset_y)
+
+	# Multi-layer shadow for soft falloff (5 layers)
+	var layers = 5
+	for i in range(layers):
+		var layer_t = float(i) / float(layers)
+		var radius_x = body_radius * shadow_scale * pulse * (0.6 + layer_t * 0.4)
+		var radius_y = radius_x * 0.5  # Flattened ellipse
+		var alpha = shadow_alpha * (1.0 - layer_t * 0.7)
+		var color = Color(0, 0, 0, alpha / float(layers))
+
+		# Ellipse approximation (12-point polygon for performance)
+		var points = PackedVector2Array()
+		for j in range(12):
+			var angle = float(j) / 12.0 * TAU
+			var px = shadow_offset.x + cos(angle) * radius_x
+			var py = shadow_offset.y + sin(angle) * radius_y
+			points.append(Vector2(px, py))
+		draw_polygon(points, PackedColorArray([color]))
+
 func _draw_shadow_ellipse(rect: Rect2, color: Color):
-	"""Enhanced shadow with dual-layer gradient falloff (optimized)."""
-	var center = rect.position + rect.size / 2
-
-	# Layer 1: Outer soft shadow (ambient shadow)
-	var outer_points = PackedVector2Array()
-	for i in range(12):  # Reduced from 20 to 12 for performance
-		var angle = TAU * i / 12.0
-		outer_points.append(center + Vector2(
-			cos(angle) * rect.size.x * 0.6,
-			sin(angle) * rect.size.y * 0.6
-		))
-	draw_colored_polygon(outer_points, Color(color.r, color.g, color.b, color.a * 0.25))
-
-	# Layer 2: Inner contact shadow (darker, sharper)
-	var inner_points = PackedVector2Array()
-	for i in range(12):  # Reduced from 16 to 12
-		var angle = TAU * i / 12.0
-		inner_points.append(center + Vector2(
-			cos(angle) * rect.size.x * 0.4,
-			sin(angle) * rect.size.y * 0.4
-		))
-	draw_colored_polygon(inner_points, color)
+	"""Legacy shadow function - redirects to soft shadow for backward compatibility."""
+	var center_x = rect.position.x + rect.size.x / 2.0
+	var center_y = rect.position.y + rect.size.y / 2.0
+	var body_radius = rect.size.x / 2.0
+	_draw_shadow_soft(body_radius, position.y, 1.0, center_x, center_y)

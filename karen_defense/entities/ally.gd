@@ -49,10 +49,19 @@ var squash_velocity: float = 0.0
 var trail_history: Array = []
 var trail_timer: float = 0.0
 
+# AAA Animation upgrade - spawn animation
+var spawn_timer: float = 0.0
+var spawn_complete: bool = false
+
 func initialize(type: String, stats: Dictionary):
 	ally_type = type
 	max_hp = stats.hp
 	current_hp = stats.hp
+	# AAA Upgrade: Initialize spawn animation
+	var config = AnimationConfig.get_config()
+	spawn_timer = config.spawn_duration
+	spawn_complete = false
+	squash_factor = config.spawn_scale_start
 	damage = stats.damage
 	move_speed = stats.speed
 	attack_cooldown = stats.get("attack_cd", 1.0)
@@ -81,6 +90,21 @@ func update_ally(delta: float, game):
 	anim_time += delta
 	_update_squash(delta)
 	_update_trail(delta)
+
+	# AAA Upgrade: Spawn animation
+	if not spawn_complete:
+		spawn_timer -= delta
+		if spawn_timer > 0:
+			var config = AnimationConfig.get_config()
+			var progress = 1.0 - (spawn_timer / config.spawn_duration)
+			var ease_progress = AnimationConfig.apply_ease(progress, AnimationConfig.EaseCurve.EASE_OUT_BACK)
+			squash_factor = lerpf(config.spawn_scale_start, 1.0, ease_progress)
+			queue_redraw()
+			return  # Skip state machine during spawn
+		else:
+			spawn_complete = true
+			squash_factor = 1.0
+
 	if collects_gold:
 		_update_coin_collector(delta, game)
 		queue_redraw()
@@ -519,10 +543,33 @@ func _draw_diamond(flash: bool, s: float):
 			draw_line(Vector2(0, -3), Vector2(0, 3), Color.WHITE, 1.5)
 			draw_line(Vector2(-2, -1), Vector2(2, -1), Color.WHITE, 1.0)
 
+func _draw_shadow_soft(body_radius: float, depth_y: float, pulse: float = 1.0, offset_x: float = 0.0, offset_y: float = 26.0):
+	"""AAA Upgrade: 5-layer gradient shadow with depth-based scaling for soft, natural falloff."""
+	var shadow_alpha = DepthPlanes.get_shadow_alpha_for_y(depth_y)
+	var shadow_scale = DepthPlanes.get_shadow_scale_for_y(depth_y)
+	var shadow_offset = Vector2(offset_x, offset_y)
+
+	# Multi-layer shadow for soft falloff (5 layers)
+	var layers = 5
+	for i in range(layers):
+		var layer_t = float(i) / float(layers)
+		var radius_x = body_radius * shadow_scale * pulse * (0.6 + layer_t * 0.4)
+		var radius_y = radius_x * 0.5  # Flattened ellipse
+		var alpha = shadow_alpha * (1.0 - layer_t * 0.7)
+		var color = Color(0, 0, 0, alpha / float(layers))
+
+		# Ellipse approximation (12-point polygon for performance)
+		var points = PackedVector2Array()
+		for j in range(12):
+			var angle = float(j) / 12.0 * TAU
+			var px = shadow_offset.x + cos(angle) * radius_x
+			var py = shadow_offset.y + sin(angle) * radius_y
+			points.append(Vector2(px, py))
+		draw_polygon(points, PackedColorArray([color]))
+
 func _draw_shadow_ellipse(rect: Rect2, col: Color):
-	var center = rect.position + rect.size / 2
-	var pts = PackedVector2Array()
-	for i in range(16):
-		var angle = TAU * i / 16.0
-		pts.append(center + Vector2(cos(angle) * rect.size.x / 2, sin(angle) * rect.size.y / 2))
-	draw_colored_polygon(pts, col)
+	"""Legacy shadow function - redirects to soft shadow for backward compatibility."""
+	var center_x = rect.position.x + rect.size.x / 2.0
+	var center_y = rect.position.y + rect.size.y / 2.0
+	var body_radius = rect.size.x / 2.0
+	_draw_shadow_soft(body_radius, position.y, 1.0, center_x, center_y)
