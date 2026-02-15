@@ -42,6 +42,7 @@ app.get('/session/create', (req, res) => {
     suppliesThisWave: 0,
     radarsThisWave: 0,
     empsThisWave: 0,
+    gameState: 'wave_active',
     lastDropAt: 0,
     lastSupplyAt: 0,
     lastRadarAt: 0,
@@ -59,6 +60,44 @@ function safeSend(ws, obj) {
     ws.send(str);
     return true;
   } catch (e) { return false; }
+}
+
+function abilityStateForSession(s, ability, now) {
+  if (!s) {
+    return { remainingThisWave: 0, retryInMs: 0 };
+  }
+
+  const remainingThisWave = ability === 'bomb'
+    ? Math.max(0, BOMBS_PER_WAVE - s.dropsThisWave)
+    : ability === 'supply'
+      ? Math.max(0, SUPPLIES_PER_WAVE - s.suppliesThisWave)
+      : Math.max(0, RADAR_PER_WAVE - s.radarsThisWave);
+
+  const cooldownMs = ability === 'bomb'
+    ? COOLDOWN_BOMB_MS
+    : ability === 'supply'
+      ? COOLDOWN_SUPPLY_MS
+      : COOLDOWN_RADAR_MS;
+
+  const lastAt = ability === 'bomb'
+    ? s.lastDropAt
+    : ability === 'supply'
+      ? s.lastSupplyAt
+      : s.lastRadarAt;
+
+  const retryInMs = Math.max(0, cooldownMs - (now - lastAt));
+  return { remainingThisWave, retryInMs };
+}
+
+function sendAbilityReject(ws, s, ability, reason, now) {
+  const { remainingThisWave, retryInMs } = abilityStateForSession(s, ability, now);
+  safeSend(ws, {
+    type: 'ability_reject',
+    ability,
+    reason,
+    retry_in_ms: retryInMs,
+    remaining_this_wave: remainingThisWave
+  });
 }
 
 const server = createServer(app);
@@ -160,8 +199,22 @@ wss.on('connection', (ws) => {
         }
       } else if (t === 'helicopter_drop' && ws.role === 'companion' && ws.code) {
         const s = sessions.get(ws.code);
-        if (!s || !s.game) return;
-        if (s.dropsThisWave >= BOMBS_PER_WAVE || (now - s.lastDropAt) < COOLDOWN_BOMB_MS) return;
+        if (!s || !s.game) {
+          sendAbilityReject(ws, s, 'bomb', 'no_game_connected', now);
+          return;
+        }
+        if (s.gameState && s.gameState !== 'wave_active') {
+          sendAbilityReject(ws, s, 'bomb', 'invalid_state', now);
+          return;
+        }
+        if (s.dropsThisWave >= BOMBS_PER_WAVE) {
+          sendAbilityReject(ws, s, 'bomb', 'wave_limit', now);
+          return;
+        }
+        if ((now - s.lastDropAt) < COOLDOWN_BOMB_MS) {
+          sendAbilityReject(ws, s, 'bomb', 'cooldown', now);
+          return;
+        }
         const x = Math.max(0, Math.min(1, Number(msg.x) ?? 0.5));
         const y = Math.max(0, Math.min(1, Number(msg.y) ?? 0.5));
         s.dropsThisWave++;
@@ -170,8 +223,22 @@ wss.on('connection', (ws) => {
         safeSend(ws, { type: 'drop_ack', x, y, ability: 'bomb', remaining: BOMBS_PER_WAVE - s.dropsThisWave });
       } else if (t === 'supply_drop' && ws.role === 'companion' && ws.code) {
         const s = sessions.get(ws.code);
-        if (!s || !s.game) return;
-        if (s.suppliesThisWave >= SUPPLIES_PER_WAVE || (now - s.lastSupplyAt) < COOLDOWN_SUPPLY_MS) return;
+        if (!s || !s.game) {
+          sendAbilityReject(ws, s, 'supply', 'no_game_connected', now);
+          return;
+        }
+        if (s.gameState && s.gameState !== 'wave_active') {
+          sendAbilityReject(ws, s, 'supply', 'invalid_state', now);
+          return;
+        }
+        if (s.suppliesThisWave >= SUPPLIES_PER_WAVE) {
+          sendAbilityReject(ws, s, 'supply', 'wave_limit', now);
+          return;
+        }
+        if ((now - s.lastSupplyAt) < COOLDOWN_SUPPLY_MS) {
+          sendAbilityReject(ws, s, 'supply', 'cooldown', now);
+          return;
+        }
         const x = Math.max(0, Math.min(1, Number(msg.x) ?? 0.5));
         const y = Math.max(0, Math.min(1, Number(msg.y) ?? 0.5));
         s.suppliesThisWave++;
@@ -186,8 +253,22 @@ wss.on('connection', (ws) => {
         safeSend(s.game, { type: 'chopper_input', x, y });
       } else if (t === 'radar_ping' && ws.role === 'companion' && ws.code) {
         const s = sessions.get(ws.code);
-        if (!s || !s.game) return;
-        if (s.radarsThisWave >= RADAR_PER_WAVE || (now - s.lastRadarAt) < COOLDOWN_RADAR_MS) return;
+        if (!s || !s.game) {
+          sendAbilityReject(ws, s, 'radar', 'no_game_connected', now);
+          return;
+        }
+        if (s.gameState && s.gameState !== 'wave_active') {
+          sendAbilityReject(ws, s, 'radar', 'invalid_state', now);
+          return;
+        }
+        if (s.radarsThisWave >= RADAR_PER_WAVE) {
+          sendAbilityReject(ws, s, 'radar', 'wave_limit', now);
+          return;
+        }
+        if ((now - s.lastRadarAt) < COOLDOWN_RADAR_MS) {
+          sendAbilityReject(ws, s, 'radar', 'cooldown', now);
+          return;
+        }
         s.radarsThisWave++;
         s.lastRadarAt = now;
         safeSend(s.game, { type: 'radar_ping' });
@@ -218,7 +299,10 @@ wss.on('connection', (ws) => {
         if (s && s.companion) safeSend(s.companion, { type: 'supply_impact', x: msg.x, y: msg.y });
       } else if (t === 'game_state' && ws.role === 'game' && ws.code) {
         const s = sessions.get(ws.code);
-        if (s && s.companion) safeSend(s.companion, { type: 'game_state', state: msg.state });
+        if (s) {
+          s.gameState = typeof msg.state === 'string' ? msg.state : s.gameState;
+          if (s.companion) safeSend(s.companion, { type: 'game_state', state: msg.state });
+        }
       } else if (t === 'ping' && ws.role === 'companion') {
         safeSend(ws, { type: 'pong', timestamp: msg.timestamp });
       }

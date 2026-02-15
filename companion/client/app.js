@@ -342,6 +342,15 @@ function setupWsHandlers(socket) {
       saveStats();
       playSoundEffect('radar');
       _hapticFeedback();
+    } else if (m.type === 'ability_reject') {
+      const ability = typeof m.ability === 'string' ? m.ability : selectedAbility;
+      const retryInMs = Number(m.retry_in_ms) || 0;
+      const remainingThisWave = typeof m.remaining_this_wave === 'number' ? m.remaining_this_wave : undefined;
+      syncAbilityFromServer(ability, retryInMs, remainingThisWave);
+      triggerAbilityRejectFeedback(ability);
+      showError('Ability unavailable', rejectMessage(ability, m.reason, retryInMs), 1800);
+      updateAbilityButtons();
+      renderSelectedAbilityStatus();
     } else if (m.type === 'new_wave') {
       bombsRemaining = BOMBS_PER_WAVE;
       suppliesRemaining = SUPPLIES_PER_WAVE;
@@ -413,6 +422,55 @@ function setupWsHandlers(socket) {
 
 function _hapticFeedback() {
   if (navigator.vibrate) navigator.vibrate(30);
+}
+
+function triggerAbilityRejectFeedback(ability) {
+  const btn = ability === 'bomb' ? btnBomb : ability === 'supply' ? btnSupply : ability === 'radar' ? btnRadar : btnEmp;
+  btn?.classList.add('reject-flash');
+  setTimeout(() => btn?.classList.remove('reject-flash'), 220);
+
+  if (abilityInfo[ability]?.needsTap) {
+    minimap.classList.add('reject-flash');
+    setTimeout(() => minimap.classList.remove('reject-flash'), 220);
+  }
+
+  if (navigator.vibrate) navigator.vibrate([20, 30, 20]);
+}
+
+function syncAbilityFromServer(ability, retryInMs, remainingThisWave) {
+  const info = abilityInfo[ability];
+  if (!info) return;
+
+  const retry = Math.max(0, Number(retryInMs) || 0);
+  const elapsed = Math.max(0, info.cooldownMs - retry);
+  const serverAlignedLastAt = retry === 0 ? 0 : Date.now() - elapsed;
+
+  if (ability === 'bomb') {
+    lastBombAt = serverAlignedLastAt;
+    if (typeof remainingThisWave === 'number') bombsRemaining = Math.max(0, remainingThisWave);
+  } else if (ability === 'supply') {
+    lastSupplyAt = serverAlignedLastAt;
+    if (typeof remainingThisWave === 'number') suppliesRemaining = Math.max(0, remainingThisWave);
+  } else if (ability === 'radar') {
+    lastRadarAt = serverAlignedLastAt;
+    if (typeof remainingThisWave === 'number') radarsRemaining = Math.max(0, remainingThisWave);
+  } else if (ability === 'emp') {
+    lastEmpAt = serverAlignedLastAt;
+    if (typeof remainingThisWave === 'number') empsRemaining = Math.max(0, remainingThisWave);
+  }
+}
+
+function abilityLabel(ability) {
+  return ability === 'emp' ? 'EMP' : ability.charAt(0).toUpperCase() + ability.slice(1);
+}
+
+function rejectMessage(ability, reason, retryInMs) {
+  const label = abilityLabel(ability);
+  if (reason === 'cooldown') return `${label} cooling down: ${Math.ceil(Math.max(0, retryInMs || 0) / 1000)}s`;
+  if (reason === 'wave_limit') return `${label} exhausted for this wave`;
+  if (reason === 'no_game_connected') return `${label} unavailable: game not connected`;
+  if (reason === 'invalid_state') return `${label} unavailable right now`;
+  return `${label} unavailable`;
 }
 
 startBtn.onclick = async () => {
@@ -839,13 +897,35 @@ function updateAbilityButtons() {
 // Cache last UI values to reduce DOM writes (better mobile perf)
 let _lastCooldownText = '', _lastRemainingText = '', _lastWaveHtml = '', _lastMinimapOpacity = '';
 
-setInterval(() => {
-  updateAbilityButtons();
-
+function renderSelectedAbilityStatus() {
   const info = abilityInfo[selectedAbility];
   const rem = getCooldownRemaining(selectedAbility);
   const remSec = Math.ceil(rem / 1000);
   const left = selectedAbility === 'bomb' ? bombsRemaining : selectedAbility === 'supply' ? suppliesRemaining : selectedAbility === 'emp' ? empsRemaining : radarsRemaining;
+
+  if (gameState !== 'wave_active') {
+    const cdText = 'Wait for combat...';
+    const stateText = gameState === 'between_waves' ? 'Shop open' :
+                      gameState === 'paused' ? 'Game paused' :
+                      gameState === 'level_up' ? 'Level up' :
+                      gameState === 'game_over' ? 'Game over' : 'Waiting...';
+    if (cdText !== _lastCooldownText) { cooldownEl.textContent = cdText; _lastCooldownText = cdText; }
+    if (stateText !== _lastRemainingText) { remainingEl.textContent = stateText; _lastRemainingText = stateText; }
+    if (_lastMinimapOpacity !== '0.5') { minimap.style.opacity = '0.5'; _lastMinimapOpacity = '0.5'; }
+    return;
+  }
+
+  const cdText = rem > 0 ? `Cooldown: ${remSec}s` : 'Ready!';
+  const remText = selectedAbility === 'radar' ? `${radarsRemaining}/${RADAR_PER_WAVE} left` :
+                  selectedAbility === 'emp' ? `${empsRemaining}/${EMP_PER_WAVE} left` :
+                  `${left}/${info.maxPerWave} left`;
+  if (cdText !== _lastCooldownText) { cooldownEl.textContent = cdText; _lastCooldownText = cdText; }
+  if (remText !== _lastRemainingText) { remainingEl.textContent = remText; _lastRemainingText = remText; }
+  if (_lastMinimapOpacity !== '1') { minimap.style.opacity = '1'; _lastMinimapOpacity = '1'; }
+}
+
+setInterval(() => {
+  updateAbilityButtons();
 
   if (waveInfoEl) {
     const stateLabel = gameState === 'wave_active' ? 'In combat' :
@@ -862,24 +942,7 @@ setInterval(() => {
     }
   }
 
-  if (gameState !== 'wave_active') {
-    const cdText = 'Wait for combat...';
-    const stateText = gameState === 'between_waves' ? 'Shop open' :
-                      gameState === 'paused' ? 'Game paused' :
-                      gameState === 'level_up' ? 'Level up' :
-                      gameState === 'game_over' ? 'Game over' : 'Waiting...';
-    if (cdText !== _lastCooldownText) { cooldownEl.textContent = cdText; _lastCooldownText = cdText; }
-    if (stateText !== _lastRemainingText) { remainingEl.textContent = stateText; _lastRemainingText = stateText; }
-    if (_lastMinimapOpacity !== '0.5') { minimap.style.opacity = '0.5'; _lastMinimapOpacity = '0.5'; }
-  } else {
-    const cdText = rem > 0 ? `Cooldown: ${remSec}s` : 'Ready!';
-    const remText = selectedAbility === 'radar' ? `${radarsRemaining}/${RADAR_PER_WAVE} left` :
-                    selectedAbility === 'emp' ? `${empsRemaining}/${EMP_PER_WAVE} left` :
-                    `${left}/${info.maxPerWave} left`;
-    if (cdText !== _lastCooldownText) { cooldownEl.textContent = cdText; _lastCooldownText = cdText; }
-    if (remText !== _lastRemainingText) { remainingEl.textContent = remText; _lastRemainingText = remText; }
-    if (_lastMinimapOpacity !== '1') { minimap.style.opacity = '1'; _lastMinimapOpacity = '1'; }
-  }
+  renderSelectedAbilityStatus();
 }, 400);
 
 // Throttle draw to 30fps on mobile for less lag and battery
