@@ -1,0 +1,8 @@
+[gd_scene format=3 uid="uid://b8xk2player"]
+
+[ext_resource type="Script" uid="uid://wxfoj0uieef0" path="res://karen_defense/entities/player.gd" id="1_player"]
+
+[node name="Player" type="Node2D" unique_id=1751412271]
+position = Vector2(478, 240)
+script = ExtResource("1_player")
+sprite_feet_padding = 250.0

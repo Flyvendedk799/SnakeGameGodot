@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://bqex0ji46ml7b"]
+
+[ext_resource type="Script" path="res://main_game/levels/generate_level_tiles.gd" id="1_script"]
+
+[node name="GenerateLevelTiles" type="Node"]
+script = ExtResource("1_script")

@@ -1,6 +1,21 @@
 class_name LinearMapConfig
 extends RefCounted
 
+## Returns the path to a node-based level scene if it exists (drag-and-drop editor).
+## Naming: level_01_nodes.tscn, level_02_nodes.tscn, etc.
+static func get_node_level_path(level_id: int) -> String:
+	var path = "res://main_game/levels/level_%02d_nodes.tscn" % level_id
+	if ResourceLoader.exists(path):
+		return path
+	return ""
+
+## Returns the path to a TileMap level scene if it exists.
+static func get_tilemap_level_path(level_id: int) -> String:
+	var path = "res://main_game/levels/level_%02d.tscn" % level_id
+	if ResourceLoader.exists(path):
+		return path
+	return ""
+
 static func get_level(level_id: int) -> Dictionary:
 	match level_id:
 		1:

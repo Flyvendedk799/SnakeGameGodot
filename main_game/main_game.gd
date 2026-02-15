@@ -123,7 +123,7 @@ func _build_scene_tree():
 	projectile_container.name = "Projectiles"
 	game_layer.add_child(projectile_container)
 
-	player_node = PlayerEntity.new()
+	player_node = preload("res://karen_defense/entities/player.tscn").instantiate()
 	player_node.name = "Player"
 	entity_layer.add_child(player_node)
 
@@ -134,14 +134,7 @@ func _build_scene_tree():
 	game_camera.enabled = true
 	game_layer.add_child(game_camera)
 
-	# Apply subtle perspective skew for depth effect (Y-shear creates isometric-like feel)
-	# Using transform instead of rotation to avoid physics issues
-	var skew_amount = 0.08  # Subtle skew for perspective
-	game_layer.transform = Transform2D(
-		Vector2(1.0, skew_amount),  # X basis with slight Y skew
-		Vector2(0.0, 1.0),           # Y basis unchanged
-		Vector2.ZERO                 # Origin
-	)
+	# Pure 2D side-scrolling POV (Shantae-style) - no perspective skew
 
 	spawn_director = SpawnDirector.new()
 	spawn_director.name = "SpawnDirector"
@@ -212,7 +205,39 @@ func _build_scene_tree():
 	# ParticleSystem is RefCounted, not Node - used via particles.update() and particles.draw()
 
 func _setup_systems():
-	map.setup(self, current_level_id)
+	var used_custom = false
+	# 1. Prefer node-based level (drag-and-drop) if it exists
+	var node_path = LinearMapConfig.get_node_level_path(current_level_id)
+	if not node_path.is_empty():
+		var packed = load(node_path) as PackedScene
+		if packed:
+			var temp = packed.instantiate()
+			if _has_level_nodes(temp):
+				var config = NodeLevelLoader.get_level_config_from_nodes(temp)
+				config["id"] = current_level_id
+				config["name"] = LinearMapConfig.get_level(current_level_id).get("name", "Node Level")
+				config["theme"] = LinearMapConfig.get_level(current_level_id).get("theme", "grass")
+				map.setup_from_config(self, config)
+				used_custom = true
+			temp.queue_free()
+	# 2. Fall back to TileMap level if no node-based level
+	if not used_custom:
+		var tilemap_path = LinearMapConfig.get_tilemap_level_path(current_level_id)
+		if not tilemap_path.is_empty():
+			var packed = load(tilemap_path) as PackedScene
+			if packed:
+				var temp = packed.instantiate()
+				var tilemap = _find_tilemap(temp)
+				if tilemap:
+					var config = TileMapLevelLoader.get_level_config_from_tilemap(tilemap)
+					config["id"] = current_level_id
+					config["name"] = LinearMapConfig.get_level(current_level_id).get("name", "TileMap Level")
+					config["theme"] = LinearMapConfig.get_level(current_level_id).get("theme", "grass")
+					map.setup_from_config(self, config)
+					used_custom = true
+				temp.queue_free()
+	if not used_custom:
+		map.setup(self, current_level_id)
 	if parallax_backdrop:
 		var theme = map.level_config.get("theme", "grass")
 		parallax_backdrop.setup(self, theme, map.level_width, map.level_height)
@@ -232,6 +257,23 @@ func _setup_systems():
 
 	# Spawn on first walkable floor (supports floor_segments and layers)
 	player_node.position = map.get_spawn_position()
+
+func _has_level_nodes(node: Node) -> bool:
+	if node is LevelFloorSegment or node is LevelPlatform or node is LevelCheckpoint or node is LevelGoal or node is LevelGrappleAnchor or node is LevelChainLink:
+		return true
+	for c in node.get_children():
+		if _has_level_nodes(c):
+			return true
+	return false
+
+func _find_tilemap(node: Node) -> TileMap:
+	if node is TileMap:
+		return node as TileMap
+	for c in node.get_children():
+		var found = _find_tilemap(c)
+		if found:
+			return found
+	return null
 
 func _update_visibility():
 	game_layer.visible = state != GameState.GAME_OVER and state != GameState.VICTORY
@@ -367,15 +409,16 @@ func _update_linear_camera(delta: float):
 		var spread_x = absf(p1.position.x - p2.position.x)
 		var spread_y = absf(p1.position.y - p2.position.y)
 		var lookahead_anchor = p2 if p2.position.x > p1.position.x else p1
-		var lookahead_x = 80.0 if lookahead_anchor.last_move_dir.x > 0.1 else -40.0
+		var lookahead_x = 50.0 if lookahead_anchor.last_move_dir.x > 0.1 else -30.0
 		target = Vector2(mid.x + lookahead_x, mid.y)
 		# Zoom out when players are spread so both fit on screen
 		var min_spread = 180.0
 		var zoom_out = clampf((spread_x + spread_y) / 400.0, 0.0, 0.35)
 		zoom_target = Vector2(camera_base_zoom + zoom_out, camera_base_zoom + zoom_out)
 	else:
+		# Classic side-scroll POV: player roughly centered, slight lookahead in movement direction
 		var anchor = p1
-		var lookahead_x = 150.0 if anchor.last_move_dir.x > 0.1 else -80.0
+		var lookahead_x = 60.0 if anchor.last_move_dir.x > 0.1 else -40.0
 		target = Vector2(anchor.position.x + lookahead_x, anchor.position.y)
 
 	# Allow vertical camera follow for platformer levels (was locking Y when dy < 90)
@@ -524,7 +567,7 @@ func _input(event):
 		unpause()
 
 func _spawn_player2():
-	player2_node = PlayerEntity.new()
+	player2_node = preload("res://karen_defense/entities/player.tscn").instantiate()
 	player2_node.action_prefix = "p2_"
 	player2_node.player_index = 1
 	player2_node.name = "Player2"

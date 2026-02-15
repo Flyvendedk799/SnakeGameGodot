@@ -4,8 +4,8 @@ extends Node
 var game = null
 var active_segment_indices: Array = []
 var zone_spawn_timers: Dictionary = {}
-var global_max_enemies: int = 25
-var spawn_interval: float = 2.0
+var global_max_enemies: int = 14
+var spawn_interval: float = 2.8
 
 func setup(game_ref):
 	game = game_ref

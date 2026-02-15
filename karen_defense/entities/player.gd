@@ -1,3 +1,4 @@
+@tool
 class_name PlayerEntity
 extends Node2D
 
@@ -194,11 +195,17 @@ var grapple_target: Vector2 = Vector2.ZERO
 var grapple_cooldown: float = 0.0
 var grapple_line_progress: float = 0.0  # 0..1 for line shoot-out animation
 var grapple_pull_started: bool = false
+var grapple_swing_mode: bool = false  # True = pendulum swing, false = pull
+var grapple_rope_length: float = 0.0   # For swing: distance to anchor when attached
+var grapple_swing_angle: float = 0.0  # Pendulum angle (0 = straight down)
+var grapple_swing_velocity: float = 0.0  # Angular velocity (rad/s)
+var grapple_is_chain_link: bool = false  # Chain links use swing, anchors can pull
 const GRAPPLE_RANGE = 350.0
 const GRAPPLE_SPEED = 800.0
 const GRAPPLE_COOLDOWN_TIME = 1.5
 const GRAPPLE_LINE_SPEED = 10.0  # How fast the line extends (0->1 in 0.1s)
 const GRAPPLE_CONE = 1.2  # Radians, ~70 deg half-cone for target detection
+const GRAPPLE_CHAIN_CONE = 3.0  # Wider cone for chain links (recovery from pits)
 
 # Ranged charge (Heavy Revolver)
 var ranged_charging: bool = false
@@ -224,6 +231,8 @@ var sprite_texture: Texture2D = null
 var hammer_texture: Texture2D = null
 var grapple_texture: Texture2D = null
 const SPRITE_HEIGHT = 150.0
+## Pixels of empty space below the character's feet in the texture. Tune in Inspector if feet float.
+@export var sprite_feet_padding: float = 0.0
 
 # Anchor points on player sprite (offset from texture center, in texture pixels)
 # X+ = character's right (facing right), Y+ = down
@@ -418,6 +427,8 @@ func reset():
 	grapple_cooldown = 0.0
 	grapple_line_progress = 0.0
 	grapple_pull_started = false
+	grapple_swing_mode = false
+	grapple_is_chain_link = false
 	is_sprinting = false
 	has_dino_mount = false
 	dino_anim_time = 0.0
@@ -480,108 +491,121 @@ func _handle_grapple(delta, game):
 	grapple_cooldown = maxf(0, grapple_cooldown - delta)
 
 	if is_grappling:
+		# Release grapple on re-press or jump (during swing)
+		if grapple_swing_mode and grapple_pull_started:
+			if Input.is_action_just_pressed(action_prefix + "grapple") or Input.is_action_just_pressed(action_prefix + "move_up"):
+				# Launch off with current tangent velocity
+				var to_anchor = grapple_target - position
+				var rope_dir = to_anchor.normalized()
+				var tangent = Vector2(-rope_dir.y, rope_dir.x)
+				var tangent_vel = tangent * grapple_swing_velocity * grapple_rope_length
+				velocity = tangent_vel
+				is_grappling = false
+				grapple_swing_mode = false
+				grapple_pull_started = false
+				grapple_line_progress = 0.0
+				grapple_cooldown = GRAPPLE_COOLDOWN_TIME * 0.5  # Shorter cooldown on release
+				invincibility_timer = maxf(invincibility_timer, 0.08)
+				if game.sfx:
+					game.sfx.play_grapple_land()
+				return
+
 		# Phase 1: Line extending to target
 		if not grapple_pull_started:
 			grapple_line_progress = minf(grapple_line_progress + delta * GRAPPLE_LINE_SPEED, 1.0)
 			if grapple_line_progress >= 1.0:
 				grapple_pull_started = true
+				# Reset air abilities when attaching (for multi-level pits: release, fall, grapple again)
+				air_jump_count = 0
+				air_dash_used = false
+				if grapple_swing_mode:
+					grapple_rope_length = position.distance_to(grapple_target)
+					# Pendulum angle: 0 = straight down from anchor
+					grapple_swing_angle = atan2(position.x - grapple_target.x, position.y - grapple_target.y)
+					grapple_swing_velocity = velocity.x / maxf(grapple_rope_length, 1.0)
 		else:
-			# Phase 2: Pull player toward target
-			var dir_to_target = (grapple_target - position).normalized()
-			var dist_to_target = position.distance_to(grapple_target)
-			if dist_to_target < 30.0:
-				# Arrived at target
-				is_grappling = false
-				grapple_pull_started = false
-				grapple_line_progress = 0.0
-				grapple_cooldown = GRAPPLE_COOLDOWN_TIME
-				squash_factor = 0.65  # Landing squash
-				invincibility_timer = maxf(invincibility_timer, 0.1)
-				game.particles.emit_burst(position.x, position.y, Color8(100, 200, 255), 6)
-				if game.sfx:
-					game.sfx.play_grapple_land()
-			else:
-				position += dir_to_target * GRAPPLE_SPEED * delta
+			if grapple_swing_mode:
+				# Phase 2 (swing): Pendulum physics (safeguard against invalid values)
+				var rope_len = maxf(grapple_rope_length, 20.0)
+				if is_nan(grapple_swing_angle) or is_inf(grapple_swing_angle):
+					grapple_swing_angle = 0.0
+				if is_nan(grapple_swing_velocity) or is_inf(grapple_swing_velocity):
+					grapple_swing_velocity = 0.0
+				var g = GRAVITY if _is_main_game_sideview(game) else 600.0
+				var angular_accel = -g / rope_len * sin(grapple_swing_angle)
+				grapple_swing_velocity += angular_accel * delta
+				grapple_swing_velocity *= 0.998  # Slight damping
+				grapple_swing_velocity = clampf(grapple_swing_velocity, -8.0, 8.0)
+				grapple_swing_angle += grapple_swing_velocity * delta
+				position = grapple_target + Vector2(sin(grapple_swing_angle), cos(grapple_swing_angle)) * rope_len
+				velocity = Vector2(-cos(grapple_swing_angle), sin(grapple_swing_angle)) * grapple_swing_velocity * grapple_rope_length
 				invincibility_timer = maxf(invincibility_timer, delta + 0.05)
-				# Clamp to world bounds
 				var world_w = game.map.SCREEN_W if game else 1280.0
 				var world_h = game.map.SCREEN_H if game else 720.0
 				position.x = clampf(position.x, 15, world_w - 15)
 				position.y = clampf(position.y, 15, world_h - 15)
-		return  # Skip other movement while grappling
+				# Arrive if very close to anchor (auto-release)
+				if position.distance_to(grapple_target) < 25.0:
+					is_grappling = false
+					grapple_swing_mode = false
+					grapple_pull_started = false
+					grapple_line_progress = 0.0
+					grapple_cooldown = GRAPPLE_COOLDOWN_TIME
+					velocity = Vector2(sin(grapple_swing_angle), cos(grapple_swing_angle)) * grapple_swing_velocity * grapple_rope_length
+					squash_factor = 0.65
+					invincibility_timer = maxf(invincibility_timer, 0.1)
+					game.particles.emit_burst(position.x, position.y, Color8(100, 200, 255), 6)
+					if game.sfx:
+						game.sfx.play_grapple_land()
+		return
 
 	if Input.is_action_just_pressed(action_prefix + "grapple") and grapple_cooldown <= 0 and not is_dead and not is_dashing:
-		# Find valid grapple target
-		var target = _find_grapple_target(game)
-		if target != Vector2.ZERO:
+		var result = _find_grapple_target(game)
+		var target_pos = result.position if result is Dictionary else result
+		var use_swing = true  # All grapples use swing mechanic
+		if target_pos != Vector2.ZERO:
 			is_grappling = true
-			grapple_target = target
+			grapple_target = target_pos
 			grapple_line_progress = 0.0
 			grapple_pull_started = false
+			grapple_swing_mode = true
+			grapple_is_chain_link = result.get("is_chain_link", false) if result is Dictionary else false
 			is_repairing = false
 			is_blocking = false
-			squash_factor = 1.4  # Stretch toward target
+			squash_factor = 1.4
 			if game.sfx:
 				game.sfx.play_grapple_launch()
 
-func _find_grapple_target(game) -> Vector2:
-	"""Scan for nearest valid grapple target in a cone in front of the player."""
+func _find_grapple_target(game) -> Dictionary:
+	"""Scan for nearest valid grapple target. Only chain links are grapplable (pit recovery)."""
 	var best_target = Vector2.ZERO
 	var best_dist = GRAPPLE_RANGE + 1
+	var best_is_chain = false
 
-	var aim_dir = Vector2.from_angle(facing_angle)
-	var candidates: Array = []
+	var candidates: Array = []  # [{pos: Vector2, is_chain: bool}]
 
-	# Grapple anchors (LinearMap - explicit grapple points)
-	if "grapple_anchors" in game.map and game.map.grapple_anchors.size() > 0:
-		for anchor in game.map.grapple_anchors:
-			candidates.append(anchor)
+	# Only chain links are grapplable (placed in pits for recovery)
+	if "chain_links" in game.map and game.map.chain_links.size() > 0:
+		for cl in game.map.chain_links:
+			var pos = cl if cl is Vector2 else Vector2(cl.get("x", 0), cl.get("y", 0))
+			candidates.append({"pos": pos, "is_chain": true})
 
-	# Barricades
-	for b in game.map.barricades:
-		candidates.append(b.position)
-
-	# Doors
-	for d in game.map.doors:
-		candidates.append(d.position)
-
-	# Allies
-	for ally in game.ally_container.get_children():
-		if ally.current_hp > 0:
-			candidates.append(ally.position)
-
-	# Wall corners as anchor points (keep corners and fort corners)
-	var map = game.map
-	var corner_anchors = [
-		Vector2(map.keep_left, map.keep_top),
-		Vector2(map.keep_right, map.keep_top),
-		Vector2(map.keep_left, map.keep_bottom),
-		Vector2(map.keep_right, map.keep_bottom),
-		Vector2(map.FORT_LEFT, map.FORT_TOP),
-		Vector2(map.FORT_RIGHT, map.FORT_TOP),
-		Vector2(map.FORT_LEFT, map.FORT_BOTTOM),
-		Vector2(map.FORT_RIGHT, map.FORT_BOTTOM),
-	]
-	for anchor in corner_anchors:
-		candidates.append(anchor)
-
-	# Entrance positions
-	for ep in map.entrance_positions:
-		candidates.append(ep)
-	for kep in map.keep_entrance_positions:
-		candidates.append(kep)
-
-	for target_pos in candidates:
+	for c in candidates:
+		var target_pos: Vector2 = c.pos
+		var is_chain: bool = c.is_chain
 		var dist = position.distance_to(target_pos)
 		if dist < 40.0 or dist > GRAPPLE_RANGE:
 			continue
 		var angle_to = (target_pos - position).angle()
 		var angle_diff = abs(fmod(angle_to - facing_angle + PI, TAU) - PI)
-		if angle_diff < GRAPPLE_CONE / 2.0 and dist < best_dist:
+		var cone = GRAPPLE_CHAIN_CONE / 2.0 if is_chain else GRAPPLE_CONE / 2.0
+		# Chain links: wider cone so you can grapple up when falling
+		if angle_diff < cone and dist < best_dist:
 			best_dist = dist
 			best_target = target_pos
+			best_is_chain = is_chain
 
-	return best_target
+	return {"position": best_target, "is_chain_link": best_is_chain}
 
 func _handle_block(delta, game):
 	block_cooldown = maxf(0, block_cooldown - delta)
@@ -801,9 +825,24 @@ func _handle_movement_sideview(delta: float, game):
 	position = result.position
 	velocity = result.velocity
 
+	# Fall-to-death: feet at or below level bottom = death (after collision so we catch landing on bottom wall)
+	var level_bottom = 720.0
+	if game.map is LinearMap:
+		level_bottom = game.map.level_height
+	if position.y + BODY_RADIUS >= level_bottom:
+		take_damage(current_hp + 1, game)  # Instant death
+		return
+
 	# Ground check
 	was_on_ground = is_on_ground
 	is_on_ground = game.map.get_ground_check(position, BODY_RADIUS)
+
+	# Ground snap: flush feet to surface (prevents floating)
+	if is_on_ground and velocity.y >= 0 and game.map.has_method("get_ground_surface_y"):
+		var surface_y = game.map.get_ground_surface_y(position, BODY_RADIUS)
+		if surface_y < INF:
+			position.y = surface_y - BODY_RADIUS
+			velocity.y = 0.0
 
 	# Reset air abilities on ground touch
 	if is_on_ground and not was_on_ground:
@@ -1460,9 +1499,34 @@ func spawn_melee_slash(offset: Vector2, color: Color, scale: float = 1.0):
 
 # --- Drawing (Brotato-style enhanced) ---
 
+func _draw_editor_preview():
+	"""Simplified preview when scene is open in editor (no game context)."""
+	var tex = sprite_texture
+	if tex == null:
+		tex = load("res://assets/WilliamPlayer.png") as Texture2D
+		if tex == null:
+			return
+	var ts = tex.get_size()
+	var base_scale = SPRITE_HEIGHT / ts.y
+	var scale_y = base_scale
+	var feet_offset_in_tex = (ts.y / 2.0) - sprite_feet_padding
+	var feet_in_display = feet_offset_in_tex * scale_y
+	var sprite_y = BODY_RADIUS - feet_in_display
+	# Shadow
+	_draw_shadow_ellipse(Rect2(-45, 26, 90, 24), Color(0, 0, 0, 0.4))
+	# Sprite (facing right)
+	draw_set_transform(Vector2(0, sprite_y), 0, Vector2(base_scale, scale_y))
+	draw_texture(tex, -ts / 2.0)
+	draw_set_transform(Vector2.ZERO, 0, Vector2.ONE)
+
 func _draw():
-	# Blink when invincible (but not during dash)
-	if invincibility_timer > 0 and not is_dashing and fmod(invincibility_timer, 0.12) < 0.06:
+	# Editor preview: show sprite when scene is open standalone (no game context)
+	if Engine.is_editor_hint() and game == null:
+		_draw_editor_preview()
+		return
+
+	# Blink when invincible (but not during dash or grapple - those keep player visible)
+	if invincibility_timer > 0 and not is_dashing and not is_grappling and fmod(invincibility_timer, 0.12) < 0.06:
 		return
 
 	var flash = hit_flash_timer > 0
@@ -1551,6 +1615,17 @@ func _draw():
 			tilt = dash_direction.angle() * 0.15
 			scale_x = base_scale * 1.25
 			scale_y = base_scale * 0.8
+		elif is_grappling:
+			# Grapple: stretched toward target, avoid extreme scales that cause invisibility
+			var to_target = grapple_target - position
+			var dist = to_target.length()
+			if dist > 1.0:
+				var dir_n = to_target / dist
+				offset_x = dir_n.x * 12.0
+				offset_y = dir_n.y * 12.0
+				tilt = dir_n.angle() * 0.2 * (-1.0 if dir_n.x < 0 else 1.0)
+			scale_x = base_scale * 1.1
+			scale_y = base_scale * 1.1
 		elif is_blocking:
 			# Block: hunch down, widen stance
 			var block_breath = sin(block_hold_time * 6.0) * 0.02
@@ -1585,10 +1660,10 @@ func _draw():
 					scale_x = base_scale * (1.0 + punch * 0.25)
 					scale_y = base_scale * (1.0 + punch * 0.15)
 		elif is_moving:
-			# Walk: amplified rhythmic bob + lean + squash/stretch cycle
+			# Walk: lean + squash/stretch (no vertical bob - keeps feet on ground)
 			var step = sin(walk_anim)
 			var step2 = cos(walk_anim)
-			offset_y = abs(step) * -8.0
+			offset_y = abs(step) * 1.0  # Slight dip instead of lift - prevents floating
 			tilt = step * 0.10 * flip_sign
 			scale_x = base_scale * (1.0 + step2 * 0.07)
 			scale_y = base_scale * (1.0 - step2 * 0.07)
@@ -1607,12 +1682,16 @@ func _draw():
 			scale_x *= depth_scale
 			scale_y *= depth_scale * perspective_squash
 
-		# Apply spring squash factor
+		# Apply spring squash factor (clamp to prevent invisibility from extreme values)
 		scale_y *= squash_factor
 		scale_x *= (2.0 - squash_factor)
+		scale_x = clampf(scale_x, base_scale * 0.25, base_scale * 2.5)
+		scale_y = clampf(scale_y, base_scale * 0.25, base_scale * 2.5)
 
-		var draw_size_y = tex_size.y * base_scale
-		var sprite_y = -draw_size_y * 0.32 + offset_y
+		# Align character's feet (not texture bottom) to BODY_RADIUS - sprite_feet_padding = empty pixels below feet in texture
+		var feet_offset_in_tex = (tex_size.y / 2.0) - sprite_feet_padding  # from center to visual feet
+		var feet_in_display = feet_offset_in_tex * scale_y
+		var sprite_y = BODY_RADIUS - feet_in_display + offset_y
 
 		# Draw afterimage trails (body only, no weapons)
 		for trail in trail_history:
@@ -1754,9 +1833,12 @@ func _draw():
 		var line_end_world = grapple_target - position
 		var line_end = line_end_world * grapple_line_progress
 		var line_len = line_end.length()
-		# Main grapple line with rope-physics sine wave
+		# Main grapple line with rope-physics sine wave (guard against zero-length)
 		var line_segments = int(maxf(8, line_len / 12.0))
-		var perp = Vector2(-line_end.normalized().y, line_end.normalized().x)
+		var perp = Vector2.ZERO
+		if line_len > 0.1:
+			var line_n = line_end / line_len
+			perp = Vector2(-line_n.y, line_n.x)
 		var prev_seg = Vector2.ZERO
 		var wave_amp = 6.0 * (1.0 - grapple_line_progress) if not grapple_pull_started else 2.0
 		for seg_i in range(1, line_segments + 1):

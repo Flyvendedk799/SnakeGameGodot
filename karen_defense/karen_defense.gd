@@ -187,7 +187,7 @@ func _build_scene_tree():
 	game_layer.add_child(projectile_container)
 
 	# Player in y-sorted layer
-	player_node = PlayerEntity.new()
+	player_node = preload("res://karen_defense/entities/player.tscn").instantiate()
 	player_node.name = "Player"
 	entity_layer.add_child(player_node)
 
@@ -878,7 +878,7 @@ func resume_from_shop():
 	shop_from_wave = false
 
 func _spawn_player2():
-	player2_node = PlayerEntity.new()
+	player2_node = preload("res://karen_defense/entities/player.tscn").instantiate()
 	player2_node.action_prefix = "p2_"
 	player2_node.player_index = 1
 	player2_node.name = "Player2"

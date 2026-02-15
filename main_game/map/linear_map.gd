@@ -29,7 +29,9 @@ var keep_entrance_positions: Array[Vector2] = []
 # Collision
 var floor_rects: Array[Rect2] = []
 var wall_rects: Array[Rect2] = []
-var platform_rects: Array[Rect2] = []
+var platform_rects: Array[Rect2] = []      # Full rects for drawing
+var platform_collision_rects: Array[Rect2] = []  # Surface-aligned for physics (platform sprite dependent)
+const PLATFORM_SURFACE_FRACTION: float = 0.28  # Default: walkable surface offset in texture (tune per-platform)
 var obstacle_rects: Array[Rect2] = []
 
 # Checkpoints and goal
@@ -39,6 +41,8 @@ var checkpoint_rects: Array[Rect2] = []
 
 # Grapple anchors - positions player can grapple to (Main Game mechanic)
 var grapple_anchors: Array[Vector2] = []
+# Chain links - always grapplable swing points (placed in pits for recovery)
+var chain_links: Array = []  # Array of Vector2 or {x,y}
 
 # Waypoints for pathfinding (platform corners, ramp positions, etc.)
 var waypoints: Array[Vector2] = []
@@ -52,6 +56,7 @@ var bg_texture: Texture2D = null
 var terrain_texture: ImageTexture = null
 var terrain_normal: ImageTexture = null
 var platform_texture: ImageTexture = null
+var platform_sprite: Texture2D = null  # platform1.png - used when available
 
 # Lighting system
 var lighting_system: LightingSystem = null
@@ -64,10 +69,23 @@ var map_config: Dictionary:
 var _decor_rocks: Array = []
 var _decor_plants: Array = []
 var _decor_props: Array = []
+var _decor_pipes: Array = []   # Metal pipes/drains (Shantae-style foreground)
+var _decor_posts: Array = []   # Wooden dock pilings
 
 func setup(game_ref, level_id: int):
 	game = game_ref
 	level_config = LinearMapConfig.get_level(level_id)
+	_setup_from_config()
+
+func setup_from_config(game_ref, config: Dictionary):
+	"""Use pre-built level config (e.g. from TileMapLevelLoader)."""
+	game = game_ref
+	level_config = config
+	_setup_from_config()
+
+func _setup_from_config():
+	if level_config.is_empty():
+		return
 	level_width = float(level_config.get("width", 2400))
 	level_height = float(level_config.get("height", 720))
 	SCREEN_W = level_width
@@ -87,10 +105,17 @@ func setup(game_ref, level_id: int):
 	entrance_positions = [Vector2(level_width * 0.5, 0), Vector2(level_width, level_height * 0.5), Vector2(level_width * 0.5, level_height), Vector2(0, level_height * 0.5)]
 	keep_entrance_positions = [Vector2(keep_left, keep_top), Vector2(keep_right, keep_top), Vector2(keep_left, keep_bottom), Vector2(keep_right, keep_bottom)]
 
+	# Load platform sprite early so collision/hitbox can use its dimensions
+	if ResourceLoader.exists("res://assets/platform1.png"):
+		platform_sprite = load("res://assets/platform1.png") as Texture2D
+	else:
+		platform_sprite = null
+
 	_build_collision()
 	_build_checkpoints()
 	_build_waypoints()
 	_build_grapple_anchors()
+	_build_chain_links()
 	_build_procedural_decor()
 
 	# Load procedural terrain textures for current theme
@@ -116,10 +141,18 @@ func _build_grapple_anchors():
 	for a in level_config.get("grapple_anchors", []):
 		grapple_anchors.append(Vector2(float(a.get("x", 0)), float(a.get("y", 0))))
 
+func _build_chain_links():
+	chain_links.clear()
+	# Only use chain links explicitly placed in level (no procedural pit placement)
+	for cl in level_config.get("chain_links", []):
+		chain_links.append(Vector2(float(cl.get("x", 0)), float(cl.get("y", 0))))
+
 func _build_procedural_decor():
 	_decor_rocks.clear()
 	_decor_plants.clear()
 	_decor_props.clear()
+	_decor_pipes.clear()
+	_decor_posts.clear()
 	var rng = RandomNumberGenerator.new()
 	rng.seed = int(level_config.get("id", 1)) * 7919 + int(level_width)
 	var theme = level_config.get("theme", "grass")
@@ -144,6 +177,33 @@ func _build_procedural_decor():
 			var fx = rect.position.x + rng.randf_range(8, rect.size.x - 8)
 			var fy = rect.position.y - rng.randf_range(2, 12)
 			_decor_props.append({"x": fx, "y": fy, "type": theme, "seed": rng.randi()})
+	# Pipes/drains integrated into floor segments (grass, cave - Shantae-style)
+	if theme == "grass" or theme == "cave":
+		for rect in floor_rects:
+			var pipe_count = maxi(1, int(rect.size.x / 400))
+			for i in range(pipe_count):
+				var px = rect.position.x + rng.randf_range(40, maxf(80, rect.size.x - 40))
+				_decor_pipes.append({
+					"x": px,
+					"y": rect.position.y,
+					"h": rect.size.y + rng.randf_range(20, 50),
+					"w": rng.randf_range(24, 40),
+					"has_water": rng.randf() < 0.4,
+					"seed": rng.randi()
+				})
+	# Wooden dock posts (grass theme - pilings rising from floor/water edge)
+	if theme == "grass":
+		for rect in floor_rects:
+			var post_count = maxi(0, int(rect.size.x / 350))
+			for i in range(post_count):
+				var gx = rect.position.x + rng.randf_range(60, rect.size.x - 60)
+				_decor_posts.append({
+					"x": gx,
+					"y": rect.position.y + rect.size.y,
+					"h": rng.randf_range(45, 85),
+					"w": rng.randf_range(12, 20),
+					"seed": rng.randi()
+				})
 	# Explicit decor from config
 	for d in level_config.get("decor", []):
 		_decor_props.append({
@@ -158,6 +218,7 @@ func _build_collision():
 	floor_rects.clear()
 	wall_rects.clear()
 	platform_rects.clear()
+	platform_collision_rects.clear()
 	obstacle_rects.clear()
 	
 	# Explicit floor segments (hand-crafted geometry - pits, elevated walkways)
@@ -186,14 +247,29 @@ func _build_collision():
 		if layer_type == "platform" or layer_type == "skybridge":
 			platform_layer_ids.append(str(layer.get("id", "platform")))
 	
-	# Explicit platforms from config (hand-crafted)
+	# Explicit platforms from config - use config w,h (from LevelPlatform.size when node-based)
 	var explicit_platforms = level_config.get("platforms", [])
+	var use_sprite_surface = platform_sprite != null
+	var default_frac = float(level_config.get("platform_surface_fraction", PLATFORM_SURFACE_FRACTION))
 	for p in explicit_platforms:
 		var x = float(p.get("x", 0))
 		var y = float(p.get("y", 200))
 		var w = float(p.get("w", 120))
-		var h = float(p.get("h", 22))
-		platform_rects.append(Rect2(x, y, w, h))
+		var h = float(p.get("h", 24))
+		var full_rect: Rect2
+		if p.get("centered", false):
+			full_rect = Rect2(x - w / 2, y - h / 2, w, h)
+		else:
+			full_rect = Rect2(x, y, w, h)
+		platform_rects.append(full_rect)
+		# Collision: align to visual walkable surface (per-platform surface_fraction for different sprites)
+		if use_sprite_surface:
+			var frac = float(p.get("surface_fraction", default_frac))
+			var surf_y = full_rect.position.y + full_rect.size.y * frac
+			var coll_h = full_rect.size.y * (1.0 - frac)
+			platform_collision_rects.append(Rect2(full_rect.position.x, surf_y, full_rect.size.x, coll_h))
+		else:
+			platform_collision_rects.append(full_rect)
 	
 	# Build from spawn zones (one platform per zone)
 	var platform_height = 22.0
@@ -207,7 +283,15 @@ func _build_collision():
 				var y_max_z = float(zone.get("y_max", 260))
 				var w = maxf(60.0, x_max - x_min)
 				var plat_y = y_max_z - platform_height
-				platform_rects.append(Rect2(x_min, plat_y, w, platform_height))
+				var full_rect = Rect2(x_min, plat_y, w, platform_height)
+				platform_rects.append(full_rect)
+				if use_sprite_surface:
+					var frac = float(level_config.get("platform_surface_fraction", PLATFORM_SURFACE_FRACTION))
+					var surf_y = full_rect.position.y + full_rect.size.y * frac
+					var coll_h = full_rect.size.y * (1.0 - frac)
+					platform_collision_rects.append(Rect2(full_rect.position.x, surf_y, full_rect.size.x, coll_h))
+				else:
+					platform_collision_rects.append(full_rect)
 	
 	# Walls: left, right, top, bottom
 	var wall_w = 50.0
@@ -291,7 +375,7 @@ func resolve_collision(pos: Vector2, radius: float) -> Vector2:
 		pos = _push_out_of_rect(pos, radius, rect)
 	for rect in floor_rects:
 		pos = _push_out_of_rect(pos, radius, rect)
-	for rect in platform_rects:
+	for rect in platform_collision_rects:
 		if pos.y + radius > rect.position.y and pos.y - radius < rect.position.y + rect.size.y:
 			pos = _push_out_of_rect(pos, radius, rect)
 	for rect in obstacle_rects:
@@ -315,7 +399,7 @@ func resolve_sideview_collision(pos: Vector2, vel: Vector2, radius: float, ignor
 		pos = _push_out_of_rect(pos, radius, rect)
 		if pos.y < prev_pos.y:
 			vel.y = 0.0
-	for rect in platform_rects:
+	for rect in platform_collision_rects:
 		if ignore_platforms:
 			continue
 		if vel.y >= 0 and pos.y + radius >= rect.position.y - 2 and pos.y - radius <= rect.position.y + rect.size.y + 2:
@@ -333,18 +417,24 @@ func resolve_sideview_collision(pos: Vector2, vel: Vector2, radius: float, ignor
 
 ## Returns true if position is standing on floor or platform (for sideview ground check).
 func get_ground_check(pos: Vector2, radius: float) -> bool:
+	return get_ground_surface_y(pos, radius) < INF
+
+## Returns the Y coordinate of the top of the surface we're standing on (floor/platform).
+## Returns INF if not on ground. Use for ground snap to prevent floating.
+func get_ground_surface_y(pos: Vector2, radius: float) -> float:
 	var foot_y = pos.y + radius
 	var above_tolerance = 4.0   # Allow feet slightly above surface (pre-landing)
 	var below_tolerance = 18.0  # Allow feet slightly into surface (post-collision)
+	var best_surface_y = INF
 	for rect in floor_rects:
 		if pos.x + radius >= rect.position.x and pos.x - radius <= rect.position.x + rect.size.x:
 			if foot_y >= rect.position.y - above_tolerance and foot_y <= rect.position.y + below_tolerance:
-				return true
-	for rect in platform_rects:
+				best_surface_y = minf(best_surface_y, rect.position.y)
+	for rect in platform_collision_rects:
 		if pos.x + radius >= rect.position.x and pos.x - radius <= rect.position.x + rect.size.x:
 			if foot_y >= rect.position.y - above_tolerance and foot_y <= rect.position.y + below_tolerance:
-				return true
-	return false
+				best_surface_y = minf(best_surface_y, rect.position.y)
+	return best_surface_y
 
 ## Returns true if there is a vertical wall within radius in the given direction (-1=left, 1=right). For wall jump.
 func get_wall_at_position(pos: Vector2, radius: float, dir: int) -> bool:
@@ -570,22 +660,22 @@ func _draw():
 				draw_rect(Rect2(cx - 3, top, 6, pillar_h), Color8(100, 90, 75, 180))
 				draw_rect(Rect2(cx - 2, top, 4, pillar_h * 0.3), Color8(130, 115, 95, 200))
 
-	# Platforms - textured floating blocks with depth shadows
+	# Platforms - platform1.png sprite (1:1 fit) or fallback to procedural
 	for rect in platform_rects:
 		var px = rect.position.x
 		var py = rect.position.y
 		var pw = rect.size.x
 		var ph = rect.size.y
 
-		# Enhanced shadow with blur effect (optimized to 2 layers)
-		var shadow_offset = 6.0
-		# Outer shadow layer
-		draw_rect(Rect2(px + shadow_offset + 2, py + shadow_offset + 2, pw, ph), Color(0, 0, 0, 0.15))
-		# Inner shadow layer
-		draw_rect(Rect2(px + shadow_offset, py + shadow_offset, pw, ph), Color(0, 0, 0, 0.25))
-
-		# Draw tiled platform texture
-		if platform_texture:
+		if platform_sprite:
+			# Draw sprite at native size - no procedural shadow, image has its own shading
+			draw_texture_rect(platform_sprite, Rect2(px, py, pw, ph), false)
+		else:
+			# Procedural platforms: shadow then texture
+			var shadow_offset = 6.0
+			draw_rect(Rect2(px + shadow_offset + 2, py + shadow_offset + 2, pw, ph), Color(0, 0, 0, 0.15))
+			draw_rect(Rect2(px + shadow_offset, py + shadow_offset, pw, ph), Color(0, 0, 0, 0.25))
+		if not platform_sprite and platform_texture:
 			var tile_size = 64.0
 			var tiles_x = int(ceil(pw / tile_size))
 			var tiles_y = int(ceil(ph / tile_size))
@@ -603,15 +693,15 @@ func _draw():
 						Rect2(0, 0, tile_w, tile_h),
 						Color(1, 1, 1, 1)
 					)
-		else:
+		elif not platform_sprite:
 			# Fallback to beveled platform
 			draw_rect(Rect2(px, py, pw, ph), plat_fill)
 			draw_rect(Rect2(px, py, pw, 6), plat_top)
 			draw_rect(Rect2(px, py + 6, 4, ph - 6), plat_fill.darkened(0.08))
 			draw_rect(Rect2(px + pw - 4, py + 6, 4, ph - 6), plat_fill.darkened(0.08))
 
-		# Theme-specific platform overlays
-		if theme == "summit" or theme == "ice":
+		# Theme-specific platform overlays (skip for sprite - has its own look)
+		if not platform_sprite and (theme == "summit" or theme == "ice"):
 			# Snow accumulation on platform tops
 			draw_rect(Rect2(px, py - 2, pw, 4), Color(0.95, 0.98, 1.0, 0.7))
 			draw_rect(Rect2(px + 4, py - 4, pw - 8, 3), Color(1, 1, 1, 0.5))
@@ -686,6 +776,51 @@ func _draw():
 				draw_rect(Rect2(px - 1, py - 12, 2, 4), Color(1, 1, 1, 0.4))
 			_:
 				draw_circle(Vector2(px, py - 5), 4, pal[3])
+
+	# Pipes/drains - metal structures in foreground (Shantae-style)
+	var pipe_metal = Color8(55, 60, 65)
+	var pipe_dark = Color8(38, 42, 48)
+	for pipe in _decor_pipes:
+		var pipe_x = pipe.x - pipe.w * 0.5
+		var pipe_y = pipe.y
+		# Pipe body (vertical cylinder illusion)
+		draw_rect(Rect2(pipe_x + 2, pipe_y, pipe.w - 4, pipe.h), pipe_metal)
+		draw_rect(Rect2(pipe_x, pipe_y + 4, 4, pipe.h - 8), pipe_dark)
+		draw_rect(Rect2(pipe_x + pipe.w - 4, pipe_y + 4, 4, pipe.h - 8), pipe_metal.lightened(0.15))
+		# Grate/opening at top
+		draw_rect(Rect2(pipe_x + 4, pipe_y, pipe.w - 8, 6), pipe_dark)
+		if pipe.get("has_water", false):
+			# Green-tinted water flowing out
+			draw_rect(Rect2(pipe_x + 6, pipe_y + 6, pipe.w - 12, 12), Color8(40, 100, 90, 180))
+	# Wooden dock posts - pilings rising from floor edge (grass theme)
+	var post_wood = Color8(75, 55, 40)
+	var post_top = Color8(95, 75, 55)
+	for pt in _decor_posts:
+		var ptx = pt.x - pt.w * 0.5
+		var pty = pt.y - pt.h
+		draw_rect(Rect2(ptx, pty, pt.w, pt.h), post_wood)
+		draw_rect(Rect2(ptx + 1, pty, pt.w - 2, 8), post_top)
+		# Rope wrap / barnacle accent
+		draw_rect(Rect2(ptx, pty + pt.h * 0.6, pt.w, 4), Color8(90, 85, 75))
+
+	# Chain links - grapplable swing points in pits (recovery mechanic)
+	var chain_metal = Color8(70, 75, 85)
+	var chain_highlight = Color8(100, 105, 115)
+	for cl in chain_links:
+		var cx = cl.x if cl is Vector2 else float(cl.get("x", 0))
+		var cy = cl.y if cl is Vector2 else float(cl.get("y", 0))
+		# Ring/hook at anchor point
+		draw_rect(Rect2(cx - 10, cy - 4, 20, 10), chain_metal)
+		draw_rect(Rect2(cx - 8, cy - 2, 16, 6), chain_highlight)
+		# Hanging chain links below (3-4 oval links)
+		var link_h = 8.0
+		for i in range(4):
+			var ly = cy + 4 + i * link_h
+			draw_rect(Rect2(cx - 4, ly, 8, 6), chain_metal)
+			draw_rect(Rect2(cx - 3, ly + 1, 6, 4), chain_highlight)
+		# Subtle glow to indicate grapplable
+		var pulse = 0.5 + 0.25 * sin(anim_time * 5.0 + cx * 0.01)
+		draw_rect(Rect2(cx - 12, cy - 6, 24, 44), Color(0.3, 0.6, 1.0, pulse * 0.08))
 
 	# Checkpoint markers - glowing posts
 	var font = ThemeDB.fallback_font

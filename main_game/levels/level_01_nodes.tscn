@@ -1,0 +1,58 @@
+[gd_scene format=3 uid="uid://level01nodes"]
+
+[ext_resource type="Script" uid="uid://c84k1wfaitv6c" path="res://main_game/levels/nodes/level_floor_segment.gd" id="1_floor"]
+[ext_resource type="Script" uid="uid://y05moouhrj4b" path="res://main_game/levels/nodes/level_platform.gd" id="2_platform"]
+[ext_resource type="Script" uid="uid://dkmlrbsm81yj8" path="res://main_game/levels/nodes/level_checkpoint.gd" id="3_checkpoint"]
+[ext_resource type="Script" uid="uid://dc3x03t2q01my" path="res://main_game/levels/nodes/level_goal.gd" id="4_goal"]
+[ext_resource type="Script" uid="uid://d4k3bnlwco73q" path="res://main_game/levels/nodes/level_chain_link.gd" id="6_chain"]
+
+[node name="Level01Nodes" type="Node2D" unique_id=1801282569]
+position = Vector2(-313, -60)
+
+[node name="FloorStart" type="Node2D" parent="." unique_id=1766932076]
+position = Vector2(0, 400)
+script = ExtResource("1_floor")
+size = Vector2(1200, 64)
+
+[node name="FloorEnd" type="Node2D" parent="." unique_id=1845901125]
+position = Vector2(1794, 389)
+scale = Vector2(0.47999513, 1)
+script = ExtResource("1_floor")
+size = Vector2(600, 64)
+
+[node name="Checkpoint" type="Node2D" parent="." unique_id=163820510]
+position = Vector2(200, 368)
+script = ExtResource("3_checkpoint")
+
+[node name="Goal" type="Node2D" parent="." unique_id=1011135523]
+position = Vector2(4679, 451)
+script = ExtResource("4_goal")
+
+[node name="ChainLink" type="Node2D" parent="." unique_id=50495024]
+position = Vector2(1534, 100)
+script = ExtResource("6_chain")
+
+[node name="LevelPlatform3" type="Node2D" parent="." unique_id=512883115]
+position = Vector2(3289, 406)
+scale = Vector2(0.4971668, 3.0799987)
+script = ExtResource("2_platform")
+size = Vector2(300, 25.76)
+metadata/_custom_type_script = "uid://y05moouhrj4b"
+
+[node name="LevelPlatform4" type="Node2D" parent="." unique_id=1632127500]
+position = Vector2(2301, 416.00003)
+scale = Vector2(0.4971668, 3.0799987)
+script = ExtResource("2_platform")
+size = Vector2(300, 25.76)
+metadata/_custom_type_script = "uid://y05moouhrj4b"
+
+[node name="FloorEnd2" type="Node2D" parent="." unique_id=966707265]
+position = Vector2(2749, 432)
+scale = Vector2(0.47999513, 1)
+script = ExtResource("1_floor")
+size = Vector2(600, 64)
+
+[node name="FloorStart2" type="Node2D" parent="." unique_id=754713938]
+position = Vector2(3546, 559)
+script = ExtResource("1_floor")
+size = Vector2(1200, 64)

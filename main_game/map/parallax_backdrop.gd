@@ -138,6 +138,10 @@ func _draw():
 			var cap_h = 12.0 + sin(i * 1.3) * 6
 			draw_rect(Rect2(bx + 10, by, 120, cap_h), Color(0.95, 0.97, 1.0, 0.5))
 
+	# DISTANT LANDMARKS - fortress, ship, far islands (Shantae-style map depth)
+	var offset_landmark = -cam_pos * 0.25
+	_draw_distant_landmarks(offset_landmark, pal, hill_h)
+
 	# Atmospheric depth fog layer 1 (after distant mountains - 40% fog intensity)
 	_draw_depth_fog(offset0, 0.40)
 
@@ -153,6 +157,10 @@ func _draw():
 			draw_rect(Rect2(bx + 35, by - tree_h, 8, tree_h), pal[4].darkened(0.15))
 			draw_rect(Rect2(bx + 20, by - tree_h + 5, 38, 15), pal[4].darkened(0.1))
 			draw_rect(Rect2(bx + 25, by - tree_h - 5, 28, 12), pal[4].darkened(0.05))
+
+	# MIDGROUND WATER BODY - calm water layer (grass, sky themes) - Shantae-style depth
+	if theme_name == "grass" or theme_name == "sky":
+		_draw_midground_water(offset2, pal)
 
 	# Atmospheric depth fog layer 2 (after mid-ground hills - 20% fog intensity)
 	_draw_depth_fog(offset0, 0.20)
@@ -273,6 +281,71 @@ func _draw_weather(cam_pos: Vector2):
 				var leaf_drift = sin(time * 2.0 + i * 1.2) * 12.0
 				var leaf_alpha = 0.15 + 0.1 * sin(time * 1.5 + i)
 				draw_rect(Rect2(lx + leaf_drift, ly, 4, 2), Color(0.4, 0.6, 0.2, leaf_alpha))
+
+func _draw_distant_landmarks(offset: Vector2, pal: Array, hill_h: float):
+	"""Draw distant landmarks: fortress, ship, islands (Shantae-style map design)."""
+	match theme_name:
+		"grass":
+			# Distant fortress/castle on the right (sandy ancient style)
+			var fort_x = offset.x + level_width * 0.85
+			var fort_y = level_height - hill_h * 0.7
+			var fort_w = 180
+			var fort_h = hill_h * 0.9
+			draw_rect(Rect2(fort_x, fort_y, fort_w, fort_h), pal[3].darkened(0.3))
+			draw_rect(Rect2(fort_x + 15, fort_y - 20, 50, 25), pal[3].darkened(0.2))  # Tower
+			draw_rect(Rect2(fort_x + 115, fort_y - 30, 40, 35), pal[3].darkened(0.15))  # Dome
+			draw_rect(Rect2(fort_x + 60, fort_y + fort_h * 0.3, 60, 40), Color8(80, 70, 90, 150))  # Arch
+			# Pirate ship anchored near mid-left
+			var ship_x = offset.x + level_width * 0.15
+			var ship_y = level_height - 80
+			draw_rect(Rect2(ship_x, ship_y, 120, 45), Color8(60, 45, 35))
+			draw_rect(Rect2(ship_x + 50, ship_y - 55, 25, 60), Color8(80, 50, 90))  # Purple sail
+			draw_rect(Rect2(ship_x + 55, ship_y - 50, 15, 50), Color8(100, 70, 110))
+			# Small palm islands in midground
+			for i in range(4):
+				var ix = offset.x + level_width * (0.2 + i * 0.22) + sin(i * 1.7) * 80
+				var iy = level_height - 35.0 - 25.0 * sin(i * 0.9)
+				draw_rect(Rect2(ix, iy, 70, 45), pal[5].darkened(0.1))
+				draw_rect(Rect2(ix + 20, iy - 30 - sin(i) * 8, 8, 35), pal[4].darkened(0.2))
+				draw_rect(Rect2(ix + 15, iy - 35, 25, 12), pal[4].darkened(0.15))
+		"sky":
+			# Floating island structures
+			var isl_x = offset.x + level_width * 0.7
+			var isl_y = level_height - 140
+			draw_rect(Rect2(isl_x, isl_y, 100, 80), pal[4].darkened(0.25))
+			draw_rect(Rect2(isl_x + 30, isl_y - 20, 40, 25), pal[5].darkened(0.2))
+		"summit", "ice":
+			# Distant peak/fortress
+			var peak_x = offset.x + level_width * 0.8
+			var peak_y = level_height - hill_h * 0.6
+			draw_rect(Rect2(peak_x, peak_y, 140, hill_h * 0.65), pal[3].darkened(0.25))
+			draw_rect(Rect2(peak_x + 20, peak_y, 100, 20), Color(0.95, 0.97, 1.0, 0.6))
+
+func _draw_midground_water(offset: Vector2, pal: Array):
+	"""Draw calm water body (grass) or cloud sea (sky) in midground."""
+	var mid_y = level_height * 0.5
+	var mid_h = level_height * 0.55
+	var mid_left = offset.x - 300
+	var mid_w = level_width + 800
+	if theme_name == "grass":
+		# Calm blue water with slight gradient
+		var water_top = Color8(70, 140, 200, 140)
+		var water_bot = Color8(50, 110, 170, 160)
+		for i in range(int(mid_h / 12) + 1):
+			var t = float(i) / maxf(mid_h / 12, 1)
+			var band_col = water_top.lerp(water_bot, t)
+			draw_rect(Rect2(mid_left, mid_y + i * 12, mid_w, 14), band_col)
+		# Subtle wave highlights
+		for i in range(int(mid_w / 120) + 2):
+			var wx = mid_left + i * 120.0 + fmod(time * 15, 120)
+			var wy = mid_y + 8.0 + sin(time * 2.0 + i * 0.5) * 4
+			draw_rect(Rect2(wx, wy, 60, 3), Color(1, 1, 1, 0.08))
+	elif theme_name == "sky":
+		# Cloud sea / soft gradient void
+		for i in range(int(mid_h / 16) + 1):
+			var t = float(i) / maxf(mid_h / 16, 1)
+			var band_col = Color(pal[4].r, pal[4].g, pal[4].b, 0.15 * (1.0 - t * 0.5))
+			draw_rect(Rect2(mid_left, mid_y + i * 16, mid_w, 18), band_col)
 
 func _draw_depth_fog(offset: Vector2, intensity: float):
 	"""Draw atmospheric depth fog with theme-appropriate color."""
