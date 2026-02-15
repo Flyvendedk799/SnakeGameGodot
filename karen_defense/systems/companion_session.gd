@@ -17,6 +17,17 @@ var _connecting: bool = false
 var _reconnect_timer: float = 0.0
 var _reconnect_backoff: float = 2.0
 const RECONNECT_MAX: float = 30.0
+const MINIMAP_PROTOCOL_VERSION: int = 1
+const MINIMAP_KEYFRAME_SECONDS: float = 2.0
+const MINIMAP_QUANT_MAX: int = 1023
+
+var _minimap_seq: int = 0
+var _minimap_last_sent_ms: int = 0
+var _minimap_last_full_ms: int = 0
+var _minimap_prev_enemies: Dictionary = {}
+var _minimap_prev_allies: Dictionary = {}
+var _minimap_prev_players: Dictionary = {}
+var _minimap_prev_chopper: Variant = null
 
 func connect_with_code(code: String):
 	_code = code.to_upper().strip_edges()
@@ -25,6 +36,7 @@ func connect_with_code(code: String):
 	_disconnect()
 	_reconnect_timer = 0.0
 	_reconnect_backoff = 2.0
+	_reset_minimap_stream_state()
 	_connect()
 
 func _connect():
@@ -52,6 +64,7 @@ func _process(delta: float):
 		if _connecting:
 			_reconnect_backoff = 2.0
 			_connecting = false
+			_reset_minimap_stream_state()
 			# Use token-based rejoin if we have it, otherwise use code
 			if _reconnect_token.length() == 12:
 				_ws.send_text(JSON.stringify({ type = "rejoin", token = _reconnect_token, role = "game" }))
@@ -114,10 +127,120 @@ func send_minimap(enemies: Array, allies: Array, players: Array):
 func send_minimap_with_state(enemies: Array, allies: Array, players: Array, wave: int, state: String, chopper_pos = null):
 	if _ws == null or _ws.get_ready_state() != WebSocketPeer.STATE_OPEN:
 		return
-	var payload = { type = "minimap", enemies = enemies, allies = allies, players = players, wave = wave, state = state }
-	if chopper_pos != null:
-		payload["chopper"] = chopper_pos
+	var now_ms := Time.get_ticks_msec()
+	var full_due := _minimap_last_full_ms == 0 or (now_ms - _minimap_last_full_ms) >= int(MINIMAP_KEYFRAME_SECONDS * 1000.0)
+
+	var current_enemies := _serialize_entity_group(enemies, true)
+	var current_allies := _serialize_entity_group(allies, false)
+	var current_players := _serialize_entity_group(players, false)
+	var current_chopper = _serialize_chopper(chopper_pos)
+
+	_minimap_seq += 1
+	var payload: Dictionary
+	if full_due:
+		payload = {
+			type = "minimap_full",
+			v = MINIMAP_PROTOCOL_VERSION,
+			seq = _minimap_seq,
+			wave = wave,
+			state = state,
+			enemies = _map_values_array(current_enemies),
+			allies = _map_values_array(current_allies),
+			players = _map_values_array(current_players)
+		}
+		if current_chopper != null:
+			payload["chopper"] = current_chopper
+		_minimap_last_full_ms = now_ms
+	else:
+		payload = {
+			type = "minimap_delta",
+			v = MINIMAP_PROTOCOL_VERSION,
+			seq = _minimap_seq,
+			base_seq = _minimap_seq - 1,
+			wave = wave,
+			state = state,
+			enemies = _build_group_delta(_minimap_prev_enemies, current_enemies),
+			allies = _build_group_delta(_minimap_prev_allies, current_allies),
+			players = _build_group_delta(_minimap_prev_players, current_players)
+		}
+		if current_chopper != null:
+			if _minimap_prev_chopper == null or not _entries_equal(_minimap_prev_chopper, current_chopper):
+				payload["chopper"] = current_chopper
+		elif _minimap_prev_chopper != null:
+			payload["chopper_removed"] = true
+
 	_ws.send_text(JSON.stringify(payload))
+	_minimap_last_sent_ms = now_ms
+	_minimap_prev_enemies = current_enemies
+	_minimap_prev_allies = current_allies
+	_minimap_prev_players = current_players
+	_minimap_prev_chopper = current_chopper
+
+
+func _reset_minimap_stream_state():
+	_minimap_seq = 0
+	_minimap_last_sent_ms = 0
+	_minimap_last_full_ms = 0
+	_minimap_prev_enemies.clear()
+	_minimap_prev_allies.clear()
+	_minimap_prev_players.clear()
+	_minimap_prev_chopper = null
+
+func _serialize_entity_group(raw_entries: Array, include_boss: bool) -> Dictionary:
+	var out: Dictionary = {}
+	for entry in raw_entries:
+		if not entry is Dictionary:
+			continue
+		var id := str(entry.get("id", "")).strip_edges()
+		if id.is_empty():
+			continue
+		var encoded = {
+			id = id,
+			x = _quantize_normalized(float(entry.get("x", 0.0))),
+			y = _quantize_normalized(float(entry.get("y", 0.0)))
+		}
+		if include_boss:
+			encoded["boss"] = bool(entry.get("boss", false))
+		out[id] = encoded
+	return out
+
+func _serialize_chopper(chopper_pos):
+	if chopper_pos == null:
+		return null
+	if not (chopper_pos is Array) or chopper_pos.size() < 2:
+		return null
+	return {
+		id = "chopper",
+		x = _quantize_normalized(float(chopper_pos[0])),
+		y = _quantize_normalized(float(chopper_pos[1]))
+	}
+
+func _quantize_normalized(value: float) -> int:
+	return int(round(clampf(value, 0.0, 1.0) * float(MINIMAP_QUANT_MAX)))
+
+func _map_values_array(map: Dictionary) -> Array:
+	var out: Array = []
+	for value in map.values():
+		out.append(value)
+	return out
+
+func _build_group_delta(prev_map: Dictionary, current_map: Dictionary) -> Dictionary:
+	var upserts: Array = []
+	var removed: Array = []
+	for id in current_map.keys():
+		if not prev_map.has(id) or not _entries_equal(prev_map[id], current_map[id]):
+			upserts.append(current_map[id])
+	for id in prev_map.keys():
+		if not current_map.has(id):
+			removed.append(id)
+	return { upserts = upserts, removed = removed }
+
+func _entries_equal(a, b) -> bool:
+	if not (a is Dictionary and b is Dictionary):
+		return false
+	return int(a.get("x", -1)) == int(b.get("x", -2)) \
+		and int(a.get("y", -1)) == int(b.get("y", -2)) \
+		and bool(a.get("boss", false)) == bool(b.get("boss", false))
 
 func send_bomb_impact(nx: float, ny: float, kills: int):
 	if _ws == null or _ws.get_ready_state() != WebSocketPeer.STATE_OPEN:
@@ -148,3 +271,4 @@ func _disconnect():
 		_ws.close()
 		_ws = null
 	_connecting = false
+	_reset_minimap_stream_state()

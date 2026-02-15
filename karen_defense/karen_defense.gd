@@ -359,17 +359,25 @@ func _process(delta):
 				var enemies_arr: Array = []
 				for e in enemy_container.get_children():
 					if e.state in [EnemyEntity.EnemyState.DEAD, EnemyEntity.EnemyState.DYING]: continue
-					# Include boss flag as third element
-					enemies_arr.append([e.position.x / w, e.position.y / h, e.is_boss])
+					enemies_arr.append({
+						id = "enemy_%s" % str(e.get_instance_id()),
+						x = e.position.x / w,
+						y = e.position.y / h,
+						boss = e.is_boss
+					})
 				var allies_arr: Array = []
 				for a in ally_container.get_children():
 					if a.current_hp <= 0: continue
-					allies_arr.append([a.position.x / w, a.position.y / h])
+					allies_arr.append({
+						id = "ally_%s" % str(a.get_instance_id()),
+						x = a.position.x / w,
+						y = a.position.y / h
+					})
 				var players_arr: Array = []
 				if not player_node.is_dead:
-					players_arr.append([player_node.position.x / w, player_node.position.y / h])
+					players_arr.append({ id = "player_1", x = player_node.position.x / w, y = player_node.position.y / h })
 				if p2_joined and player2_node and not player2_node.is_dead:
-					players_arr.append([player2_node.position.x / w, player2_node.position.y / h])
+					players_arr.append({ id = "player_2", x = player2_node.position.x / w, y = player2_node.position.y / h })
 				var chopper_pos = null
 				if companion_helicopter and is_instance_valid(companion_helicopter):
 					chopper_pos = [companion_helicopter.position.x / w, companion_helicopter.position.y / h]
