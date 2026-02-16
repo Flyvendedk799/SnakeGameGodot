@@ -1424,18 +1424,10 @@ btnCloseStats.onclick = () => {
 
 if (!statsPanel.classList.contains('hidden')) saveUiContext();
 
-// Restore connection/session state for seamless resume.
-try {
-  if (!reconnectToken) reconnectToken = localStorage.getItem('companion_reconnect_token');
-  if (!sessionCode) sessionCode = localStorage.getItem('companion_session_code');
-} catch (_) { /* ignore storage errors */ }
+// Always show landing first so PC player can see/enter the code.
+// Don't auto-resume from localStorage - companion must click "Start as Companion"
+// to create a new session and display the code for the game to join.
 setSelectedAbility(selectedAbility);
-if (sessionCode || reconnectToken) {
-  if (sessionCode) codeEl.textContent = sessionCode;
-  landing.classList.add('hidden');
-  waiting.classList.remove('hidden');
-  startReconnectLoop();
-}
 
 btnToggleSound.onclick = () => {
   soundEnabled = !soundEnabled;
