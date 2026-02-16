@@ -85,6 +85,15 @@ func initialize(type: String, stats: Dictionary):
 	label_short = stats.get("short", "K")
 	sprite_texture = _get_texture(stats.get("sprite", "enemya"))
 	anim_time = randf() * 10.0
+	if Engine.get_main_loop() and Engine.get_main_loop().current_scene and Engine.get_main_loop().current_scene.has_method("get_enemy_hp_multiplier"):
+		var game_scene = Engine.get_main_loop().current_scene
+		var hp_mult = game_scene.get_enemy_hp_multiplier()
+		var dmg_mult = game_scene.get_enemy_damage_multiplier()
+		max_hp = maxi(1, int(round(max_hp * hp_mult)))
+		current_hp = max_hp
+		damage = maxi(1, int(round(damage * dmg_mult)))
+		if game_scene.challenge_manager:
+			move_speed *= game_scene.challenge_manager.get_enemy_speed_mult()
 
 func update_enemy(delta: float, game):
 	hit_flash_timer = maxf(0, hit_flash_timer - delta)
@@ -382,7 +391,8 @@ func die(game, drop_loot: bool = true):
 		var zone_mult: float = 1.0
 		if game.map and game.map.has_method("get_zone_gold_mult"):
 			zone_mult = game.map.get_zone_gold_mult(position)
-		var direct_gold: int = int(gold_value * gold_mult * zone_mult)
+		var run_gold_mult = game.get_gold_multiplier() if game.has_method("get_gold_multiplier") else 1.0
+		var direct_gold: int = int(gold_value * gold_mult * zone_mult * run_gold_mult)
 		var credit_index: int = 0
 		if credit_player and credit_player == game.player2_node:
 			credit_index = 1
@@ -398,6 +408,8 @@ func die(game, drop_loot: bool = true):
 			game.gold_container.add_child(gold)
 		game.progression.add_xp_for_player(credit_index, xp_value)
 		game.enemies_killed_total += 1
+		if game.has_method("on_enemy_killed"):
+			game.on_enemy_killed()
 		# Lifesteal for all alive players
 		if not game.player_node.is_dead and game.player_node.lifesteal > 0:
 			game.player_node.heal(game.player_node.lifesteal)

@@ -4,3 +4,5 @@ extends Node
 
 var current_level: int = 1
 var pending_level: int = 0
+var pending_modifiers: Array = []
+var use_daily_modifiers: bool = false

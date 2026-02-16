@@ -18,16 +18,27 @@ var daily_seed: int = 0
 
 func setup(game_ref):
 	game = game_ref
-	# Daily seed based on date
+	daily_seed = _get_daily_seed()
+
+static func _get_daily_seed() -> int:
 	var date = Time.get_date_dict_from_system()
-	daily_seed = date.year * 10000 + date.month * 100 + date.day
+	return date.year * 10000 + date.month * 100 + date.day
 
 func get_daily_modifiers() -> Array:
 	"""Get today's daily challenge modifiers (2 random modifiers from seed)."""
+	return get_daily_modifiers_from_seed(daily_seed)
+
+static func get_daily_modifiers_from_seed(seed: int) -> Array:
+	"""Get deterministic daily challenge modifiers from a seed."""
 	var rng = RandomNumberGenerator.new()
-	rng.seed = daily_seed
+	rng.seed = seed
 	var keys = MODIFIERS.keys()
 	var picked = []
+	if keys.size() == 0:
+		return picked
+	if keys.size() == 1:
+		picked.append(keys[0])
+		return picked
 	var idx1 = rng.randi_range(0, keys.size() - 1)
 	picked.append(keys[idx1])
 	var idx2 = idx1
@@ -35,6 +46,9 @@ func get_daily_modifiers() -> Array:
 		idx2 = rng.randi_range(0, keys.size() - 1)
 	picked.append(keys[idx2])
 	return picked
+
+static func get_today_daily_modifiers() -> Array:
+	return get_daily_modifiers_from_seed(_get_daily_seed())
 
 func activate_modifier(mod_key: String):
 	if mod_key in MODIFIERS and mod_key not in active_modifiers:
@@ -96,3 +110,6 @@ func get_active_descriptions() -> Array:
 	for key in active_modifiers:
 		descs.append(MODIFIERS[key])
 	return descs
+
+func get_total_reward_mult() -> float:
+	return get_gold_mult()

@@ -10,6 +10,7 @@ var gold_mine_multiplier: float = 1.0
 var crystal_per_wave: int = 0
 var max_waves: int = 50
 var world_tier: int = 3
+var shop_discount_mult: float = 1.0
 
 # Legacy accessor — total gold (for display/tracking)
 var gold: int:
@@ -21,6 +22,7 @@ func reset():
 	crystals = 0
 	gold_mine_multiplier = 1.0
 	crystal_per_wave = 0
+	shop_discount_mult = 1.0
 
 func configure_for_map(map_config: Dictionary):
 	max_waves = map_config.get("max_waves", 50)
@@ -95,8 +97,8 @@ func apply_end_of_wave_bonus(wave_number: int):
 		crystals += crystal_per_wave
 
 func get_cost_multiplier() -> float:
-	# Map1 cheaper (0.85), Map3 full price (1.15)
-	return 0.7 + 0.15 * world_tier
+	# Map1 cheaper (0.85), Map3 full price (1.15), plus checkpoint risk/reward shop modifier
+	return (0.7 + 0.15 * world_tier) * shop_discount_mult
 
 func get_display_cost_gold(cost_gold: int) -> int:
 	return _effective_cost_gold(cost_gold)

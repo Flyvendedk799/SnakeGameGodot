@@ -87,6 +87,7 @@ func _draw():
 	# === TOP CENTER: Wave info ===
 	_draw_wave_info(font)
 	_draw_mid_round_panel(font)
+	_draw_main_game_run_info(font)
 
 	# === TOP RIGHT: Resources ===
 	_draw_resources(font)
@@ -125,6 +126,19 @@ func _draw():
 	draw_set_transform(Vector2.ZERO, 0, Vector2.ONE)
 
 # --- Rounded panel helper ---
+
+func _draw_main_game_run_info(font: Font):
+	if game == null:
+		return
+	if game.has_method("should_show_run_summary") and game.should_show_run_summary():
+		var text = game.get_run_summary_line()
+		_draw_rounded_panel(Rect2(300, 50, 680, 26), Color8(0, 0, 0, 130), Color8(95, 85, 120, 140), 5.0)
+		draw_string(font, Vector2(320, 68), text, HORIZONTAL_ALIGNMENT_LEFT, 640, 12, Color8(230, 220, 255))
+	if game.has_method("get_active_modifiers_label"):
+		var mod_label = game.get_active_modifiers_label()
+		if not mod_label.is_empty():
+			draw_string(font, Vector2(320, 86), mod_label, HORIZONTAL_ALIGNMENT_LEFT, 640, 11, Color8(255, 220, 130))
+
 func _draw_rounded_panel(rect: Rect2, bg_color: Color, border_color: Color, radius: float = 6.0):
 	"""Draw a panel with simulated rounded corners and subtle gradient."""
 	var r = rect

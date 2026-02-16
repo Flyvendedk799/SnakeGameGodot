@@ -15,6 +15,8 @@ var mode: int = 0  # 0 = world select, 1 = level select, 2 = upgrade shop
 var selected_upgrade: int = 0
 var upgrade_types: Array = ["hp", "speed", "potions"]
 var upgrade_names: Array = ["+10% Max HP", "+5% Move Speed", "+1 Starting Potion"]
+var selected_modifier_idx: int = -1  # -1 = none
+var use_daily_modifiers: bool = false
 
 # World visual positions (node graph layout)
 var world_positions: Array[Vector2] = [
@@ -96,6 +98,12 @@ func _input_level_select(event):
 			_launch_level(level_id)
 	elif event.is_action_pressed("ui_back"):
 		mode = 0
+	elif event is InputEventKey and event.pressed and event.keycode == KEY_M:
+		selected_modifier_idx += 1
+		if selected_modifier_idx >= ChallengeManager.MODIFIERS.keys().size():
+			selected_modifier_idx = -1
+	elif event is InputEventKey and event.pressed and event.keycode == KEY_T:
+		use_daily_modifiers = not use_daily_modifiers
 	elif event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
 		for i in range(total):
 			var lp = _get_level_node_pos(i, total)
@@ -131,6 +139,12 @@ func _is_level_completed(level_id: int) -> bool:
 
 func _launch_level(level_id: int):
 	MainGameManager.current_level = level_id
+	MainGameManager.pending_modifiers.clear()
+	MainGameManager.use_daily_modifiers = use_daily_modifiers
+	if selected_modifier_idx >= 0:
+		var keys = ChallengeManager.MODIFIERS.keys()
+		if selected_modifier_idx < keys.size():
+			MainGameManager.pending_modifiers.append(keys[selected_modifier_idx])
 	get_tree().change_scene_to_file("res://main_game/main_game.tscn")
 
 func _get_level_node_pos(index: int, total: int) -> Vector2:
@@ -343,6 +357,22 @@ func _draw_level_select(font: Font):
 		draw_string(font, Vector2(SCREEN_W / 2.0 - 40, panel_y + 78), status, HORIZONTAL_ALIGNMENT_CENTER, 80, 14, status_col)
 	else:
 		draw_string(font, Vector2(SCREEN_W / 2.0 - 50, panel_y + 78), "LOCKED", HORIZONTAL_ALIGNMENT_CENTER, 100, 14, Color8(140, 60, 60))
+
+	# Challenge modifier preview (level-select only)
+	var mod_text = "Modifier: None"
+	var mod_col = Color8(120, 130, 155)
+	if selected_modifier_idx >= 0:
+		var keys = ChallengeManager.MODIFIERS.keys()
+		if selected_modifier_idx < keys.size():
+			var key = keys[selected_modifier_idx]
+			var data = ChallengeManager.MODIFIERS[key]
+			mod_text = "Modifier: %s (x%.2f rewards)" % [data.get("name", key), float(data.get("gold_mult", 1.0))]
+			mod_col = Color8(255, 210, 110)
+	if use_daily_modifiers:
+		mod_text += " + Daily"
+		mod_col = Color8(120, 220, 255)
+	draw_string(font, Vector2(SCREEN_W / 2.0 - 280, SCREEN_H - 96), mod_text, HORIZONTAL_ALIGNMENT_CENTER, 560, 13, mod_col)
+	draw_string(font, Vector2(SCREEN_W / 2.0 - 280, SCREEN_H - 78), "[M] Cycle Modifier   [T] Toggle Daily Preset", HORIZONTAL_ALIGNMENT_CENTER, 560, 11, Color8(120, 115, 140))
 
 	# Controls
 	draw_string(font, Vector2(SCREEN_W / 2.0 - 250, SCREEN_H - 40), "Arrow Keys: Navigate  |  Enter/Space: Play  |  Esc: Back to Map", HORIZONTAL_ALIGNMENT_CENTER, 500, 12, Color8(110, 105, 130))
