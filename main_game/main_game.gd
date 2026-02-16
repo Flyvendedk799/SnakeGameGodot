@@ -26,6 +26,7 @@ var entity_layer: Node2D
 
 var spawn_director: SpawnDirector
 var checkpoint_manager: CheckpointManager
+var challenge_manager: ChallengeManager
 var combat_system: CombatSystem
 var economy: Economy
 var progression: Progression
@@ -77,6 +78,8 @@ var combo_meter: float = 0.0  # HUD combo display compatibility (Karen Defense)
 var combo_level: int = 0
 var combo_stats: Dictionary = {"mark_strike": 0, "supply_chain": 0, "emp_followup": 0}
 var _redraw_accum: float = 0.0
+var run_summary_timer: float = 10.0
+var run_summary_line: String = ""
 
 # FX / post-process (player.gd, enemy.gd, boss_manager.gd, FXDrawNode)
 var chromatic_intensity: float = 0.0
@@ -166,6 +169,10 @@ func _build_scene_tree():
 	checkpoint_manager = CheckpointManager.new()
 	checkpoint_manager.name = "CheckpointManager"
 	add_child(checkpoint_manager)
+
+	challenge_manager = ChallengeManager.new()
+	challenge_manager.name = "ChallengeManager"
+	add_child(challenge_manager)
 
 	combat_system = CombatSystem.new()
 	combat_system.name = "CombatSystem"
@@ -274,6 +281,8 @@ func _setup_systems():
 	game_camera.position = map.get_player_anchor()
 	spawn_director.setup(self)
 	checkpoint_manager.setup(self)
+	challenge_manager.setup(self)
+	_apply_pending_run_modifiers()
 	combat_system.setup(self)
 	progression.setup(self)
 	building_manager.setup(self)
@@ -286,6 +295,68 @@ func _setup_systems():
 
 	# Spawn on first walkable floor (supports floor_segments and layers)
 	player_node.position = map.get_spawn_position()
+	run_summary_line = get_run_summary_line()
+	run_summary_timer = 11.0
+
+
+func _apply_pending_run_modifiers():
+	if challenge_manager == null:
+		return
+	challenge_manager.deactivate_all()
+	if MainGameManager.use_daily_modifiers:
+		for key in ChallengeManager.get_today_daily_modifiers():
+			challenge_manager.activate_modifier(key)
+	for key in MainGameManager.pending_modifiers:
+		challenge_manager.activate_modifier(str(key))
+	MainGameManager.pending_modifiers.clear()
+	MainGameManager.use_daily_modifiers = false
+
+func get_enemy_hp_multiplier() -> float:
+	var challenge_mult = challenge_manager.get_enemy_hp_mult() if challenge_manager else 1.0
+	return DifficultyManager.get_enemy_hp_mult() * challenge_mult
+
+func get_enemy_damage_multiplier() -> float:
+	var challenge_mult = challenge_manager.get_enemy_dmg_mult() if challenge_manager else 1.0
+	return DifficultyManager.get_enemy_damage_mult() * challenge_mult
+
+func get_gold_multiplier() -> float:
+	var challenge_mult = challenge_manager.get_gold_mult() if challenge_manager else 1.0
+	return DifficultyManager.get_gold_mult() * challenge_mult
+
+func get_spawn_rate_multiplier() -> float:
+	var challenge_mult = challenge_manager.get_spawn_mult() if challenge_manager else 1.0
+	return DifficultyManager.get_spawn_rate_mult() * challenge_mult
+
+func should_allow_checkpoint_heal() -> bool:
+	if not DifficultyManager.heal_at_checkpoints():
+		return false
+	if challenge_manager and challenge_manager.is_heal_disabled():
+		return false
+	return true
+
+func get_run_summary_line() -> String:
+	var hp_pct = int((get_enemy_hp_multiplier() - 1.0) * 100.0)
+	var dmg_pct = int((get_enemy_damage_multiplier() - 1.0) * 100.0)
+	var gold_pct = int((1.0 - get_gold_multiplier()) * 100.0)
+	var text = "%s: %+d%% enemy HP, %+d%% enemy damage, %d%% gold" % [DifficultyManager.get_difficulty_name(), hp_pct, dmg_pct, gold_pct]
+	if challenge_manager and challenge_manager.active_modifiers.size() > 0:
+		text += " | Mod bonus x%.2f" % challenge_manager.get_total_reward_mult()
+	return text
+
+func get_active_modifiers_label() -> String:
+	if challenge_manager == null or challenge_manager.active_modifiers.is_empty():
+		return ""
+	var names = []
+	for key in challenge_manager.active_modifiers:
+		names.append(ChallengeManager.MODIFIERS.get(key, {}).get("name", key))
+	return "Modifiers: %s" % ", ".join(names)
+
+func should_show_run_summary() -> bool:
+	return run_summary_timer > 0.0
+
+func on_enemy_killed():
+	if spawn_director:
+		spawn_director.notify_enemy_killed()
 
 func _has_level_nodes(node: Node) -> bool:
 	if node is LevelFloorSegment or node is LevelPlatform or node is LevelCheckpoint or node is LevelGoal or node is LevelGrappleAnchor or node is LevelChainLink:
@@ -358,6 +429,7 @@ func _process(delta):
 	if damage_flash_timer > 0:
 		damage_flash_timer -= delta
 	if state == GameState.LEVEL_ACTIVE:
+		run_summary_timer = maxf(0.0, run_summary_timer - delta)
 		_update_linear_camera(delta)
 		_debug_camera_timer += delta
 		if _debug_camera_timer >= 5.0:
