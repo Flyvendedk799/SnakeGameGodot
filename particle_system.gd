@@ -2,7 +2,7 @@ class_name ParticleSystem
 extends RefCounted
 
 var particles: Array = []
-const MAX_PARTICLES = 220  # Lower cap to prevent sudden draw/GC spikes
+const MAX_PARTICLES = 350  # AAA Upgrade: Increased for more dynamic effects
 const PARTICLE_LIFETIME = 0.7
 
 func emit_burst(x: float, y: float, color: Color, count: int = 12, lifetime: float = PARTICLE_LIFETIME):
@@ -14,6 +14,10 @@ func emit_burst(x: float, y: float, color: Color, count: int = 12, lifetime: flo
 		p.shape = [Particle.Shape.CIRCLE, Particle.Shape.CIRCLE, Particle.Shape.SQUARE][randi() % 3]
 		p.spin_speed = randf_range(-8.0, 8.0)
 		p.gravity_mult = randf_range(0.6, 1.4)
+		# AAA Upgrade: 20% of particles have collision and color fade
+		p.has_collision = randf() < 0.2
+		p.color_end = color.darkened(0.3)
+		p.ground_y = y + randf_range(10, 30)
 		particles.append(p)
 
 func emit_directional(x: float, y: float, dir: Vector2, color: Color, count: int = 8):

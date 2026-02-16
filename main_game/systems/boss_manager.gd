@@ -54,8 +54,16 @@ func spawn_boss():
 
 	var spawn_x = float(boss_config.get("spawn_x", 800))
 	var spawn_y = float(boss_config.get("spawn_y", 400))
-	if game.map.has_method("get_ground_y_at_x"):
+	var spawn_pos = Vector2(spawn_x, spawn_y)
+
+	# Fix spawn position for sideview mode - place boss on ground
+	if game.map.has_method("get_ground_surface_y"):
+		var ground_y = game.map.get_ground_surface_y(spawn_pos, boss_entity.entity_size)
+		if ground_y > 0:
+			spawn_y = ground_y - boss_entity.entity_size
+	elif game.map.has_method("get_ground_y_at_x"):
 		spawn_y = game.map.get_ground_y_at_x(spawn_x) - boss_entity.entity_size
+
 	boss_entity.position = Vector2(spawn_x, spawn_y)
 
 	game.enemy_container.add_child(boss_entity)
@@ -156,8 +164,15 @@ func _spawn_minions(count: int):
 
 		var offset_x = randf_range(-100, 100)
 		var spawn_pos = boss_entity.position + Vector2(offset_x, 0)
-		if game.map.has_method("get_ground_y_at_x"):
+
+		# Fix spawn position for sideview mode - place minion on ground
+		if game.map.has_method("get_ground_surface_y"):
+			var ground_y = game.map.get_ground_surface_y(spawn_pos, minion.entity_size)
+			if ground_y > 0:
+				spawn_pos.y = ground_y - minion.entity_size
+		elif game.map.has_method("get_ground_y_at_x"):
 			spawn_pos.y = game.map.get_ground_y_at_x(spawn_pos.x) - minion.entity_size
+
 		minion.position = spawn_pos
 		game.enemy_container.add_child(minion)
 

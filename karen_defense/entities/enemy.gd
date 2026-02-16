@@ -37,6 +37,12 @@ var game = null  # Reference to main game node
 var target_entrance: int = -1
 var attack_timer: float = 0.0
 var hit_flash_timer: float = 0.0
+# Physics for collision
+var velocity: Vector2 = Vector2.ZERO
+const GRAVITY: float = 600.0
+var is_on_ground: bool = false
+var pit_check_timer: float = 0.0  # Check for pits periodically
+const PIT_CHECK_DISTANCE: float = 25.0  # Look ahead this far
 var chase_target = null
 var target_door = null  # DoorEntity reference when attacking a door
 var anim_time: float = 0.0
@@ -130,6 +136,16 @@ func update_enemy(delta: float, game):
 				state = EnemyState.DEAD
 				queue_free()
 				return
+
+	# Fall-to-death: check if enemy fell below level bottom
+	var level_bottom = 720.0
+	if game.map and game.map.get("level_height"):
+		level_bottom = game.map.level_height
+	if position.y + entity_size >= level_bottom:
+		# Instant death from falling into void
+		take_damage(current_hp + 999, game)
+		return
+
 	queue_redraw()
 
 func _state_approaching(delta, game):
@@ -145,7 +161,29 @@ func _state_approaching(delta, game):
 			state = EnemyState.BREACHED
 		return
 	last_dir = dir.normalized()
-	position += dir.normalized() * move_speed * delta
+
+	# Check for pit ahead before moving
+	var should_move = true
+	if is_on_ground and _is_pit_ahead(dir.normalized(), game):
+		# Stop at edge of pit - don't walk into certain death
+		should_move = false
+		velocity.x = 0
+
+	# Apply physics: horizontal movement + gravity
+	if should_move:
+		velocity.x = dir.normalized().x * move_speed
+	velocity.y += GRAVITY * delta
+
+	# Apply velocity
+	position += velocity * delta
+
+	# Collision detection (only in sideview mode)
+	if game.map and game.map.has_method("resolve_sideview_collision"):
+		var result = game.map.resolve_sideview_collision(position, velocity, entity_size, false)
+		position = result.position
+		velocity = result.velocity
+		# Check if on ground (vertical velocity stopped)
+		is_on_ground = absf(velocity.y) < 10.0 and result.velocity.y == 0
 
 func _state_attacking_barricade(_delta, game):
 	var barricade = game.map.get_barricade(target_entrance)
@@ -248,13 +286,41 @@ func _state_chasing(delta, game):
 	var dir = (chase_point - position)
 	if dir.length() > 1:
 		last_dir = dir.normalized()
-		var desired_pos = position + dir.normalized() * move_speed * delta
-		var resolved_pos = game.map.resolve_collision(desired_pos, entity_size)
-		if resolved_pos.distance_to(position) < move_speed * delta * 0.2:
-			stuck_timer += delta
+
+		# Check if sideview mode for proper physics
+		if game.map and game.map.has_method("resolve_sideview_collision"):
+			# Check for pit ahead before moving
+			var should_move = true
+			if is_on_ground and _is_pit_ahead(dir.normalized(), game):
+				# Stop at edge of pit
+				should_move = false
+				velocity.x = 0
+				stuck_timer += delta  # Mark as stuck to trigger repath
+
+			# Sideview: Use velocity + gravity physics
+			if should_move:
+				velocity.x = dir.normalized().x * move_speed
+			velocity.y += GRAVITY * delta
+			position += velocity * delta
+
+			var result = game.map.resolve_sideview_collision(position, velocity, entity_size, false)
+			position = result.position
+			velocity = result.velocity
+			is_on_ground = absf(velocity.y) < 10.0 and result.velocity.y == 0
+
+			if result.position.distance_to(position) < move_speed * delta * 0.2:
+				stuck_timer += delta
+			else:
+				stuck_timer = 0.0
 		else:
-			stuck_timer = 0.0
-		position = resolved_pos
+			# Top-down: Use simple collision
+			var desired_pos = position + dir.normalized() * move_speed * delta
+			var resolved_pos = game.map.resolve_collision(desired_pos, entity_size)
+			if resolved_pos.distance_to(position) < move_speed * delta * 0.2:
+				stuck_timer += delta
+			else:
+				stuck_timer = 0.0
+			position = resolved_pos
 		if stuck_timer > 0.35:
 			nav_repath_timer = 0.0
 			stuck_timer = 0.0
@@ -374,6 +440,25 @@ func _fire_ranged(game):
 	proj.proj_speed = 220.0
 	game.projectile_container.add_child(proj)
 
+func _is_pit_ahead(direction: Vector2, game) -> bool:
+	"""Check if there's a pit/drop-off ahead in the given direction."""
+	if not game.map or not game.map.has_method("get_ground_surface_y"):
+		return false  # Only check in sideview mode
+
+	# Check a point ahead in movement direction
+	var check_pos = position + direction.normalized() * PIT_CHECK_DISTANCE
+	var ground_y = game.map.get_ground_surface_y(check_pos, entity_size)
+
+	# If no ground found, or ground is much lower than current position, it's a pit
+	if ground_y <= 0:
+		return true  # No ground = pit
+
+	var ground_drop = ground_y - position.y
+	if ground_drop > entity_size * 3:  # Drop more than 3x entity height = pit
+		return true
+
+	return false
+
 func take_damage(amount: int, game):
 	current_hp -= amount
 	hit_flash_timer = 0.1
@@ -385,6 +470,10 @@ func take_damage(amount: int, game):
 		die(game)
 
 func die(game, drop_loot: bool = true):
+	# Prevent double-death (already dying or dead)
+	if state == EnemyState.DYING or state == EnemyState.DEAD:
+		return
+
 	if drop_loot:
 		var credit_player = last_damager if (last_damager and is_instance_valid(last_damager)) else game.player_node
 		var gold_mult: float = credit_player.enemy_gold_mult if credit_player else 1.0

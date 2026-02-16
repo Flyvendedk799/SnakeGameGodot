@@ -67,12 +67,15 @@ var was_on_ground: bool = false
 var drop_through_timer: float = 0.0
 var coyote_timer: float = 0.0
 var jump_buffer_timer: float = 0.0
+# AAA Upgrade: Additional input buffers
+var dash_buffer_timer: float = 0.0
+var grapple_buffer_timer: float = 0.0
 const GRAVITY = 900.0
 const JUMP_FORCE = -380.0
 const DROP_THROUGH_DURATION = 0.2
-const COYOTE_TIME: float = 0.1
-const JUMP_BUFFER_TIME: float = 0.15
-const AIR_CONTROL_MULT: float = 0.90  # AAA Upgrade: Increased for snappier mid-air control
+const COYOTE_TIME: float = 0.14  # AAA Upgrade: Increased for more forgiving platforming
+const JUMP_BUFFER_TIME: float = 0.20  # AAA Upgrade: Increased for more forgiving input
+const AIR_CONTROL_MULT: float = 0.96  # AAA Upgrade: Increased for snappier mid-air control
 
 # Double jump
 var air_jump_count: int = 0
@@ -87,10 +90,21 @@ var air_dash_used: bool = false
 var has_wall_jump: bool = true
 var is_wall_sliding: bool = false
 var wall_slide_dir: int = 0
-const WALL_SLIDE_SPEED: float = 60.0
-const WALL_JUMP_FORCE_X: float = 250.0
+const WALL_SLIDE_SPEED: float = 45.0  # AAA Upgrade: Slower for more control
+const WALL_JUMP_FORCE_X: float = 280.0  # AAA Upgrade: More horizontal boost
 const WALL_JUMP_FORCE_Y: float = -350.0
 var wall_jump_lockout: float = 0.0
+# AAA Upgrade: Wall jump chain and cling system
+var wall_jump_chain_timer: float = 0.0
+var wall_cling_timer: float = 0.0
+const WALL_CLING_MAX: float = 0.5
+
+# AAA Upgrade: Momentum system
+var horizontal_momentum: float = 0.0
+var slide_timer: float = 0.0
+const SLIDE_DURATION = 0.2
+const SPRINT_JUMP_BOOST = 1.15
+
 var xp_mult: float = 1.0
 var proj_speed_mult: float = 1.0
 var has_grenades: bool = false
@@ -165,6 +179,15 @@ const DASH_SPEED = 650.0
 const DASH_DURATION = 0.16
 const DASH_COOLDOWN_TIME = 0.35
 var dash_trail: Array = []  # For afterimage effect
+# AAA Upgrade: Momentum-based dash
+var current_dash_speed: float = DASH_SPEED
+var enemies_dashed_through: int = 0
+
+# AAA Upgrade: Ground pound mechanic
+var is_ground_pounding: bool = false
+const GROUND_POUND_VELOCITY: float = 800.0
+const GROUND_POUND_AOE: float = 120.0
+const GROUND_POUND_DAMAGE_MULT: float = 2.5
 
 # Combo state
 var combo_index: int = 0  # 0, 1, 2 for the 3-hit combo
@@ -173,15 +196,22 @@ const COMBO_WINDOW_TIME = 0.6  # Slightly more forgiving combo window
 const COMBO_COUNT = 3
 # Per-combo-hit configs: {duration, damage_mult, arc_mult, lunge, squash}
 const COMBO_CONFIGS = [
-	{"duration": 0.13, "damage_mult": 1.0, "arc_mult": 1.0, "lunge": 20.0, "squash": 1.3},   # Hit 1: Quick slash (faster)
-	{"duration": 0.16, "damage_mult": 1.35, "arc_mult": 0.85, "lunge": 26.0, "squash": 1.4},   # Hit 2: Thrust (more forward)
-	{"duration": 0.22, "damage_mult": 1.7, "arc_mult": 1.6, "lunge": 14.0, "squash": 0.55},   # Hit 3: Heavy spin (more impact)
+	{"duration": 0.13, "damage_mult": 1.0, "arc_mult": 1.0, "lunge": 20.0, "squash": 1.3, "hitstop": 0.0},   # Hit 1: Quick slash - no hitstop for smooth flow
+	{"duration": 0.16, "damage_mult": 1.35, "arc_mult": 0.85, "lunge": 26.0, "squash": 1.4, "hitstop": 0.015},   # Hit 2: Thrust - minimal hitstop
+	{"duration": 0.22, "damage_mult": 1.7, "arc_mult": 1.6, "lunge": 14.0, "squash": 0.55, "hitstop": 0.03},   # Hit 3: Heavy spin - light impact pause
 ]
 
 # Input buffering for responsive combat
 var attack_buffered: bool = false  # Buffer the next attack press during current attack animation
 var attack_buffer_timer: float = 0.0
-const ATTACK_BUFFER_WINDOW = 0.15  # 150ms input buffer
+const ATTACK_BUFFER_WINDOW = 0.22  # AAA Upgrade: 220ms input buffer for more responsive combat
+
+# AAA Upgrade: Attack canceling system
+var last_hit_landed_time: float = 0.0
+const CANCEL_WINDOW: float = 0.12
+
+# AAA Upgrade: Combo visual trails
+var combo_visual_trails: Array = []  # {type, pos, timer, color, angle}
 
 # Weapon wheel
 var weapon_wheel: WeaponWheel = WeaponWheel.new()
@@ -266,6 +296,14 @@ var jump_state: String = "none"  # "anticipation", "launch", "apex", "fall"
 var jump_phase_timer: float = 0.0
 var jump_queued: bool = false  # Queue jump during anticipation
 # Note: melee_attack_phase and melee_phase_timer already declared at lines 57-58
+
+# AAA Upgrade: Procedural animation system
+var cape_trail_points: Array[Vector2] = []  # Spring physics trail
+var weapon_offset: Vector2 = Vector2.ZERO  # Weapon follows action with lag
+var weapon_rotation: float = 0.0  # Weapon rotation for attacks
+var limb_foot_l: Vector2 = Vector2.ZERO  # Left foot IK position
+var limb_foot_r: Vector2 = Vector2.ZERO  # Right foot IK position
+var anticipation_timer: float = 0.0  # Wind-up before major actions
 
 func _ready():
 	if player_index == 1:
@@ -472,8 +510,12 @@ func update_player(delta: float, game):
 	_handle_potion(game)
 	_update_timers(delta)
 	_update_squash(delta)
+	_update_combo_visuals(delta)  # AAA Upgrade: Update combo trail effects
 	_update_trail(delta)
 	_update_dash_trail(delta)
+	_update_cape_trail(delta)  # AAA Upgrade: Procedural cape/hair trail
+	_update_limb_ik(delta, game)  # AAA Upgrade: Foot IK for ground contact
+	_update_weapon_lag(delta)  # AAA Upgrade: Weapon follows with spring lag
 	idle_time += delta
 	# HP regen
 	if regen_rate > 0 and current_hp < max_hp:
@@ -497,6 +539,9 @@ func update_player(delta: float, game):
 
 func _handle_grapple(delta, game):
 	grapple_cooldown = maxf(0, grapple_cooldown - delta)
+	# AAA Upgrade: Grapple input buffering
+	if grapple_buffer_timer > 0:
+		grapple_buffer_timer = maxf(0, grapple_buffer_timer - delta)
 
 	if is_grappling:
 		# Release grapple on re-press or jump (during swing)
@@ -514,8 +559,13 @@ func _handle_grapple(delta, game):
 				grapple_line_progress = 0.0
 				grapple_cooldown = GRAPPLE_COOLDOWN_TIME * 0.5  # Shorter cooldown on release
 				invincibility_timer = maxf(invincibility_timer, 0.08)
+				# AAA Upgrade: Double coyote time on grapple release for more forgiving platforming
+				coyote_timer = COYOTE_TIME * 2.0  # 0.28s grace period
+				# AAA Upgrade: Grapple release feedback
 				if game.sfx:
 					game.sfx.play_grapple_land()
+				if game.particles:
+					game.particles.emit_burst(position.x, position.y, Color8(200, 220, 255), 8)
 				return
 
 		# Phase 1: Line extending to target
@@ -560,6 +610,8 @@ func _handle_grapple(delta, game):
 					grapple_line_progress = 0.0
 					grapple_cooldown = GRAPPLE_COOLDOWN_TIME
 					velocity = Vector2(sin(grapple_swing_angle), cos(grapple_swing_angle)) * grapple_swing_velocity * grapple_rope_length
+					# AAA Upgrade: Double coyote time on auto-release
+					coyote_timer = COYOTE_TIME * 2.0
 					squash_factor = 0.65
 					invincibility_timer = maxf(invincibility_timer, 0.1)
 					game.particles.emit_burst(position.x, position.y, Color8(100, 200, 255), 6)
@@ -567,7 +619,13 @@ func _handle_grapple(delta, game):
 						game.sfx.play_grapple_land()
 		return
 
-	if Input.is_action_just_pressed(action_prefix + "grapple") and grapple_cooldown <= 0 and not is_dead and not is_dashing:
+	# AAA Upgrade: Check buffered input when cooldown expires
+	var want_grapple = Input.is_action_just_pressed(action_prefix + "grapple")
+	if want_grapple and grapple_cooldown > 0:
+		grapple_buffer_timer = 0.20  # Buffer the input
+
+	if (want_grapple or grapple_buffer_timer > 0) and grapple_cooldown <= 0 and not is_dead and not is_dashing:
+		grapple_buffer_timer = 0  # Consume buffer
 		var result = _find_grapple_target(game)
 		var target_pos = result.position if result is Dictionary else result
 		var _use_swing = true  # All grapples use swing mechanic
@@ -581,8 +639,14 @@ func _handle_grapple(delta, game):
 			is_repairing = false
 			is_blocking = false
 			squash_factor = 1.4
+			# AAA Upgrade: Grapple launch feedback
 			if game.sfx:
 				game.sfx.play_grapple_launch()
+			if game.particles:
+				var dir_to_target = (grapple_target - position).normalized()
+				game.particles.emit_directional(position.x, position.y, dir_to_target, Color8(200, 220, 255), 8)
+			if game.has_method("start_shake"):
+				game.start_shake(1.0, 0.06)
 
 func _find_grapple_target(game) -> Dictionary:
 	"""Scan for nearest valid grapple target. Only chain links are grapplable (pit recovery)."""
@@ -711,12 +775,21 @@ func _is_on_floor_only(pos: Vector2, game) -> bool:
 func _handle_movement_sideview(delta: float, game):
 	# During dash, apply dash movement and skip normal physics
 	if is_dashing:
-		position += dash_direction * DASH_SPEED * delta
+		# AAA Upgrade: Use momentum-based dash speed
+		position += dash_direction * current_dash_speed * delta
 		if dash_trail.size() == 0 or position.distance_to(dash_trail[-1].pos) > 8.0:
 			dash_trail.append({"pos": position, "alpha": 0.5, "angle": facing_angle})
 		# Clamp to map bounds during dash
 		position.x = clampf(position.x, 30, game.map.level_width - 30)
 		position.y = clampf(position.y, 30, game.map.level_height - 30)
+
+		# AAA Upgrade: Track enemies passed through for extended i-frames
+		if game.has_method("get") and game.get("enemy_container"):
+			var candidates = game.get("spatial_grid").get_enemies_near(position, 40.0) if game.get("spatial_grid") else game.enemy_container.get_children()
+			for enemy in candidates:
+				if enemy.state != EnemyEntity.EnemyState.DEAD and enemy.state != EnemyEntity.EnemyState.DYING:
+					if position.distance_to(enemy.position) < BODY_RADIUS + enemy.entity_size:
+						enemies_dashed_through += 1
 		return
 
 	drop_through_timer = maxf(0, drop_through_timer - delta)
@@ -756,10 +829,26 @@ func _handle_movement_sideview(delta: float, game):
 	if is_blocking:
 		effective_speed *= BLOCK_SPEED_PENALTY
 
-	# Air control
+	# AAA Upgrade: Slide momentum system
+	if slide_timer > 0:
+		slide_timer -= delta
+		# Reduce friction during slide
+		effective_speed *= 1.3
+
+	# Air control with momentum preservation
 	var control_mult = AIR_CONTROL_MULT if not is_on_ground else 1.0
 	var target_vx = input_x * effective_speed * control_mult
+
+	# AAA Upgrade: Blend momentum with target velocity in air
+	if not is_on_ground and absf(horizontal_momentum) > 50.0:
+		target_vx = lerpf(horizontal_momentum, target_vx, 0.3)
+		horizontal_momentum = lerpf(horizontal_momentum, 0.0, delta * 2.0)  # Decay momentum
+
 	velocity.x = lerpf(velocity.x, target_vx, delta * 18.0)
+
+	# AAA Upgrade: Wall jump chain timer
+	if wall_jump_chain_timer > 0:
+		wall_jump_chain_timer -= delta
 
 	# Wall jump lockout timer
 	if wall_jump_lockout > 0:
@@ -778,15 +867,38 @@ func _handle_movement_sideview(delta: float, game):
 			is_wall_sliding = true
 			wall_slide_dir = 1
 
+	# AAA Upgrade: Wall cling - holding toward wall pauses descent
+	if is_wall_sliding and wall_cling_timer < WALL_CLING_MAX:
+		# Pause descent when holding toward wall
+		if (wall_slide_dir == -1 and input_x < -0.8) or (wall_slide_dir == 1 and input_x > 0.8):
+			wall_cling_timer += delta
+			velocity.y = 0  # Pause fall
+
+	# AAA Upgrade: Allow jump cancel on combo finisher (hit 3) within cancel window
+	var can_cancel_with_jump = last_hit_landed_time < CANCEL_WINDOW and is_attacking_melee and ((combo_index - 1) % COMBO_COUNT == 2)
+
 	# Jump: ground / coyote / double jump / wall jump
-	var can_jump = is_on_ground or coyote_timer > 0
+	var can_jump = is_on_ground or coyote_timer > 0 or can_cancel_with_jump
 	if want_jump:
+		# AAA Upgrade: If canceling attack, reset attack state
+		if can_cancel_with_jump:
+			is_attacking_melee = false
+			melee_attack_timer = 0
+			melee_attack_phase = "none"
 		if is_wall_sliding:
 			velocity.x = -wall_slide_dir * WALL_JUMP_FORCE_X
 			velocity.y = WALL_JUMP_FORCE_Y
 			is_on_ground = false
 			is_wall_sliding = false
-			wall_jump_lockout = 0.15
+			wall_cling_timer = 0  # Reset cling timer on jump
+
+			# AAA Upgrade: Chain wall jumps - reduced lockout if chaining
+			if wall_jump_chain_timer > 0:
+				wall_jump_lockout = 0.08  # Reduced lockout for chain
+			else:
+				wall_jump_lockout = 0.15  # Normal lockout
+			wall_jump_chain_timer = 0.8  # 0.8s window to chain
+
 			coyote_timer = 0
 			air_jump_count = 0
 			squash_factor = 1.3
@@ -801,9 +913,21 @@ func _handle_movement_sideview(delta: float, game):
 			var config = AnimationConfig.get_config()
 			squash_factor = config.jump_launch_squash
 			jump_state = "launch"
+
+			# AAA Upgrade: Momentum preservation and sprint jump boost
+			horizontal_momentum = velocity.x
+			if is_sprinting and absf(velocity.x) > 100:
+				horizontal_momentum *= SPRINT_JUMP_BOOST
+				# Extra particle burst for sprint jump
+				if game.particles:
+					game.particles.emit_directional(position.x, position.y + BODY_RADIUS, Vector2(-signf(velocity.x), -0.5), Color8(255, 200, 100), 8)
+
 			# AAA Upgrade: Camera zoom pulse on jump
 			if game.has_method("trigger_camera_zoom_pulse"):
 				game.trigger_camera_zoom_pulse(-0.5)
+			# AAA Upgrade: Subtle shake on jump for tactile feel
+			if game.has_method("start_shake"):
+				game.start_shake(1.5, 0.06)
 			if game.sfx:
 				game.sfx.play_jump()
 			if game.particles:
@@ -812,6 +936,9 @@ func _handle_movement_sideview(delta: float, game):
 			velocity.y = JUMP_FORCE * 0.85
 			air_jump_count += 1
 			squash_factor = 1.2
+			# AAA Upgrade: Subtle shake on double jump
+			if game.has_method("start_shake"):
+				game.start_shake(1.2, 0.05)
 			if game.sfx:
 				game.sfx.play_jump()
 			game.particles.emit_ring(position.x, position.y + BODY_RADIUS, Color8(180, 220, 255), 8)
@@ -834,9 +961,31 @@ func _handle_movement_sideview(delta: float, game):
 		elif velocity.y > 100 and jump_state != "fall":
 			jump_state = "fall"
 			squash_factor = lerpf(squash_factor, 1.05, delta * 5.0)
+
+		# AAA Upgrade: Ground pound activation (DOWN + ATTACK while airborne)
+		if not is_ground_pounding and Input.is_action_pressed(action_prefix + "move_down") and Input.is_action_just_pressed(action_prefix + "attack"):
+			is_ground_pounding = true
+			velocity.y = GROUND_POUND_VELOCITY
+			velocity.x *= 0.3  # Reduce horizontal drift
+			squash_factor = 0.6  # Squash on activation
+			jump_state = "ground_pound"
+			# Visual feedback
+			if game.particles:
+				game.particles.emit_ring(position.x, position.y, Color8(255, 100, 50), 12)
+			if game.sfx:
+				game.sfx.play_dash()  # Reuse dash sound for whoosh effect
+
+		# AAA Upgrade: Ground pound visual trail during fall
+		if is_ground_pounding:
+			squash_factor = 0.6  # Maintain squash
+			# Continuous upward particle trail
+			if game.particles and randf() < 0.4:
+				game.particles.emit_directional(position.x, position.y, Vector2(0, -1), Color8(255, 120, 50), 3)
 	else:
 		if jump_state != "none":
 			jump_state = "none"
+		if is_ground_pounding:
+			is_ground_pounding = false  # Reset if grounded normally
 
 	# Jump apex squash
 	if not is_on_ground and velocity.y > -50 and velocity.y < 50:
@@ -888,6 +1037,56 @@ func _handle_movement_sideview(delta: float, game):
 		if game.sfx:
 			game.sfx.play_jump()
 
+	# AAA Upgrade: Ground pound landing with AOE damage
+	if is_ground_pounding and is_on_ground and not was_on_ground:
+		is_ground_pounding = false
+		squash_factor = 0.4  # Massive squash on impact
+
+		# Devastating screen shake and chromatic aberration
+		if game.has_method("start_shake"):
+			game.start_shake(12.0, 0.3, game.ShakeCurve.EASE_OUT_EXPO)
+		if game.has_method("start_chromatic"):
+			game.start_chromatic(5.0)
+		if game.has_method("trigger_camera_zoom_pulse"):
+			game.trigger_camera_zoom_pulse(2.0)  # Heavy zoom in
+		if game.has_method("trigger_bloom"):
+			game.trigger_bloom(1.5)
+
+		# Massive impact ring and particles
+		spawn_impact_ring(Vector2.ZERO, 80.0, Color(1.0, 0.3, 0.0, 1.0), 6.0)
+		if game.particles:
+			game.particles.emit_burst(position.x, position.y + BODY_RADIUS, Color8(255, 120, 50), 30)
+			# Radial dust explosion
+			for i in range(12):
+				var angle = (float(i) / 12.0) * TAU
+				var dir = Vector2(cos(angle), sin(angle))
+				game.particles.emit_directional(position.x, position.y + BODY_RADIUS, dir, Color8(200, 180, 150), 8)
+
+		if game.sfx:
+			game.sfx.play_grenade_explode()
+
+		# AOE damage to all enemies within radius
+		if game.has_method("get") and game.get("enemy_container"):
+			var aoe_damage = int(melee_damage * GROUND_POUND_DAMAGE_MULT)
+			var candidates = game.get("spatial_grid").get_enemies_near(position, GROUND_POUND_AOE) if game.get("spatial_grid") else game.enemy_container.get_children()
+			var hit_count = 0
+			for enemy in candidates:
+				if enemy.state == EnemyEntity.EnemyState.DEAD or enemy.state == EnemyEntity.EnemyState.DYING:
+					continue
+				if position.distance_to(enemy.position) <= GROUND_POUND_AOE:
+					enemy.last_damager = self
+					enemy.take_damage(aoe_damage, game)
+					var dir_to_enemy = (enemy.position - position).normalized()
+					if game.particles:
+						game.particles.emit_directional(enemy.position.x, enemy.position.y, dir_to_enemy, Color8(255, 100, 50), 8)
+					if game.has_method("spawn_damage_number"):
+						game.spawn_damage_number(enemy.position, str(aoe_damage), Color8(255, 120, 50), true)
+					hit_count += 1
+
+			# Show AOE hit indicator
+			if hit_count > 0 and game.has_method("spawn_damage_number"):
+				game.spawn_damage_number(position + Vector2(0, -50), "SLAM! x%d" % hit_count, Color(1.0, 0.5, 0.0), false)
+
 	# AAA Upgrade: Enhanced landing effects with ease curves and recovery
 	if is_on_ground and not was_on_ground and velocity.y > 50:
 		var config = AnimationConfig.get_config()
@@ -903,6 +1102,13 @@ func _handle_movement_sideview(delta: float, game):
 
 		landing_recovery_timer = config.landing_recovery_time
 		landing_target_squash = 1.0
+
+		# AAA Upgrade: Slide momentum on high-speed landing
+		if is_sprinting and absf(velocity.x) > 150:
+			slide_timer = SLIDE_DURATION
+			# Extra slide particles
+			if game.particles:
+				game.particles.emit_directional(position.x, position.y + BODY_RADIUS, Vector2(-signf(velocity.x), 0.2), Color8(200, 190, 170), 12)
 
 		# Enhanced particle effects
 		spawn_impact_ring(Vector2(0, 22), 50.0 * impact_strength, Color(0.9, 0.85, 0.7, 0.7), 3.0)
@@ -1195,17 +1401,45 @@ func _handle_potion(game):
 
 func _handle_dash(delta, game):
 	dash_cooldown = maxf(0, dash_cooldown - delta)
+	# AAA Upgrade: Dash input buffering
+	if dash_buffer_timer > 0:
+		dash_buffer_timer = maxf(0, dash_buffer_timer - delta)
+
 	if is_dashing:
 		dash_timer -= delta
 		if dash_timer <= 0:
 			is_dashing = false
-			invincibility_timer = maxf(invincibility_timer, 0.05)  # Brief post-dash i-frame
+			# AAA Upgrade: Extended i-frames if dashed through 2+ enemies
+			var base_iframes = 0.05
+			if enemies_dashed_through >= 2:
+				base_iframes = 0.15  # 150ms extended i-frames for skill play
+				# Visual feedback for successful dash-through
+				if game.particles:
+					game.particles.emit_burst(position.x, position.y, Color8(150, 200, 255), 15)
+			invincibility_timer = maxf(invincibility_timer, base_iframes)
+			enemies_dashed_through = 0  # Reset counter
 		return
 
-	if Input.is_action_just_pressed(action_prefix + "dash") and dash_cooldown <= 0 and not is_dead and not is_blocking:
+	# AAA Upgrade: Check buffered input when cooldown expires
+	var want_dash = Input.is_action_just_pressed(action_prefix + "dash")
+	if want_dash and dash_cooldown > 0:
+		dash_buffer_timer = 0.20  # Buffer the input
+
+	# AAA Upgrade: Allow dash cancel within attack cancel window (bypasses cooldown if hit just landed)
+	var can_cancel_with_dash = want_dash and last_hit_landed_time < CANCEL_WINDOW and is_attacking_melee
+	var can_dash_normally = (want_dash or dash_buffer_timer > 0) and dash_cooldown <= 0
+
+	if (can_dash_normally or can_cancel_with_dash) and not is_dead and not is_blocking:
+		dash_buffer_timer = 0  # Consume buffer
 		# Air dash check: if airborne, must have ability and not already used
 		if not is_on_ground and in_sideview_mode and (not has_air_dash or air_dash_used):
 			return
+
+		# AAA Upgrade: If canceling attack, reset attack state
+		if can_cancel_with_dash:
+			is_attacking_melee = false
+			melee_attack_timer = 0
+			melee_attack_phase = "none"
 		# Dash in movement direction, or facing direction if standing still
 		var input_dir = Vector2.ZERO
 		if Input.is_action_pressed(action_prefix + "move_up"): input_dir.y -= 1
@@ -1216,19 +1450,45 @@ func _handle_dash(delta, game):
 			dash_direction = input_dir.normalized()
 		else:
 			dash_direction = Vector2.from_angle(facing_angle)
+
+		# AAA Upgrade: Velocity-dependent dash speed
+		var player_speed = velocity.length()
+		if is_sprinting or player_speed > 200:
+			current_dash_speed = 750.0  # Sprint dash - faster and longer
+		elif player_speed < 50:
+			current_dash_speed = 550.0  # Standing dash - slower, tactical
+		else:
+			current_dash_speed = DASH_SPEED  # Standard dash
+
 		is_dashing = true
 		dash_timer = DASH_DURATION
 		dash_cooldown = DASH_COOLDOWN_TIME
 		invincibility_timer = DASH_DURATION + 0.05  # Invincible during dash
 		squash_factor = 1.5  # Stretch in dash direction
+		enemies_dashed_through = 0  # Reset counter at dash start
+
+		# AAA Upgrade: Trigger bloom effect on dash (stronger for sprint dash)
+		if game.has_method("trigger_bloom"):
+			var bloom_strength = 1.5 if current_dash_speed >= 750 else 1.0
+			game.trigger_bloom(bloom_strength)
+		# AAA Upgrade: Camera zoom pulse on dash
+		if game.has_method("trigger_camera_zoom_pulse"):
+			game.trigger_camera_zoom_pulse(-0.8)
+		# AAA Upgrade: Screen shake on dash start (stronger for sprint dash)
+		if game.has_method("start_shake"):
+			var shake_strength = 2.5 if current_dash_speed >= 750 else 2.0
+			game.start_shake(shake_strength, 0.08)
 		# Mark air dash used if airborne
 		if not is_on_ground and in_sideview_mode:
 			air_dash_used = true
-			velocity.y = 0  # Cancel vertical momentum
+			# AAA Upgrade: Preserve momentum - blend with dash direction instead of canceling
+			var preserved_velocity = velocity * 0.4  # Preserve 40% of air momentum
+			velocity = preserved_velocity + dash_direction * current_dash_speed * 0.3
 		is_repairing = false
-		# Dash particles
+		# Dash particles (more for sprint dash)
 		if game:
-			game.particles.emit_directional(position.x, position.y, -dash_direction, Color8(150, 200, 255), 6)
+			var particle_count = 10 if current_dash_speed >= 750 else 6
+			game.particles.emit_directional(position.x, position.y, -dash_direction, Color8(150, 200, 255), particle_count)
 		if game and game.sfx:
 			game.sfx.play_dash()
 
@@ -1281,7 +1541,76 @@ func _update_dash_trail(delta: float):
 			dash_trail.remove_at(i)
 		i -= 1
 
+func _update_cape_trail(delta: float):
+	"""AAA Upgrade: Spring physics trail for cape/hair secondary motion."""
+	# Add current position to front of trail
+	cape_trail_points.insert(0, position)
+	if cape_trail_points.size() > 8:
+		cape_trail_points.resize(8)
+
+	# Spring physics: Each point follows previous with lag
+	for i in range(1, cape_trail_points.size()):
+		var target = cape_trail_points[i - 1]
+		# Add velocity influence for dynamic motion
+		var velocity_offset = velocity * delta * 0.05
+		cape_trail_points[i] = cape_trail_points[i].lerp(target - velocity_offset, delta * 12.0)
+
+func _update_limb_ik(delta: float, game):
+	"""AAA Upgrade: Foot IK for ground contact - feet stick to ground."""
+	if not game or not game.map:
+		return
+
+	# Left foot
+	var foot_l_world = position + Vector2(-8, BODY_RADIUS)
+	if is_on_ground and game.map.has_method("get_ground_surface_y"):
+		var ground_y = game.map.get_ground_surface_y(foot_l_world, BODY_RADIUS)
+		if ground_y > 0:
+			limb_foot_l = limb_foot_l.lerp(Vector2(foot_l_world.x - position.x, ground_y - position.y), delta * 15.0)
+	else:
+		# In air, feet dangle
+		limb_foot_l = limb_foot_l.lerp(Vector2(-8, BODY_RADIUS + 4), delta * 8.0)
+
+	# Right foot
+	var foot_r_world = position + Vector2(8, BODY_RADIUS)
+	if is_on_ground and game.map.has_method("get_ground_surface_y"):
+		var ground_y = game.map.get_ground_surface_y(foot_r_world, BODY_RADIUS)
+		if ground_y > 0:
+			limb_foot_r = limb_foot_r.lerp(Vector2(foot_r_world.x - position.x, ground_y - position.y), delta * 15.0)
+	else:
+		limb_foot_r = limb_foot_r.lerp(Vector2(8, BODY_RADIUS + 4), delta * 8.0)
+
+func _update_weapon_lag(delta: float):
+	"""AAA Upgrade: Weapon follows attacks with spring lag for impact feel."""
+	var target_offset = Vector2.ZERO
+	var target_rotation = 0.0
+
+	if is_attacking_melee:
+		# Weapon swings during attacks
+		var attack_progress = 1.0 - (melee_attack_timer / 0.3)
+		match combo_index:
+			0:  # Hit 1 - horizontal slash
+				target_rotation = lerpf(-0.5, 0.5, attack_progress)
+				target_offset = Vector2(cos(facing_angle) * 15.0, sin(facing_angle) * 15.0)
+			1:  # Hit 2 - thrust
+				target_rotation = 0.0
+				target_offset = Vector2(cos(facing_angle) * 20.0 * attack_progress, sin(facing_angle) * 20.0 * attack_progress)
+			2:  # Hit 3 - spin
+				target_rotation = attack_progress * TAU
+				target_offset = Vector2(cos(facing_angle + target_rotation) * 18.0, sin(facing_angle + target_rotation) * 18.0)
+	else:
+		# Idle weapon position
+		target_offset = Vector2(cos(facing_angle) * 8.0, sin(facing_angle) * 8.0)
+		target_rotation = facing_angle * 0.3
+
+	# Spring to target
+	weapon_offset = weapon_offset.lerp(target_offset, delta * 18.0)
+	weapon_rotation = lerpf(weapon_rotation, target_rotation, delta * 15.0)
+
 func _update_timers(delta):
+	# AAA Upgrade: Update attack cancel window timer
+	if last_hit_landed_time < CANCEL_WINDOW:
+		last_hit_landed_time += delta
+
 	if is_attacking_melee:
 		melee_attack_timer -= delta
 		var config = AnimationConfig.get_config()
@@ -1349,6 +1678,8 @@ func take_damage(amount: int, game, attacker = null):
 			invincibility_timer = 0.2
 			squash_factor = 0.85
 		else:
+			# AAA Upgrade: Add hitstop on regular block
+			game.start_hitstop(0.03)
 			game.spawn_damage_number(position, "BLOCKED", Color8(180, 200, 220))
 			game.particles.emit_directional(position.x, position.y, Vector2.from_angle(facing_angle), Color8(180, 200, 220), 4)
 			if game.sfx:
@@ -1505,6 +1836,42 @@ func apply_skill(skill_id: String, game = null):
 
 # --- Visual juice helpers ---
 
+func spawn_combo_visual(hit_index: int, hit_position: Vector2):
+	"""AAA Upgrade: Spawn visual trail effect for combo hit."""
+	var trail_data = {}
+	trail_data["pos"] = hit_position
+	trail_data["timer"] = 0.0
+	trail_data["angle"] = facing_angle
+	trail_data["max_time"] = 0.3  # Default value
+
+	match hit_index:
+		0:  # Hit 1: Quick slash - white arc
+			trail_data["type"] = "arc"
+			trail_data["max_time"] = 0.3
+			trail_data["color"] = Color.WHITE
+		1:  # Hit 2: Thrust - yellow line
+			trail_data["type"] = "line"
+			trail_data["max_time"] = 0.4
+			trail_data["color"] = Color.YELLOW
+		2:  # Hit 3: Heavy spin - red vortex
+			trail_data["type"] = "vortex"
+			trail_data["max_time"] = 0.6
+			trail_data["color"] = Color.RED
+		_:  # Fallback
+			trail_data["type"] = "arc"
+			trail_data["color"] = Color.WHITE
+
+	combo_visual_trails.append(trail_data)
+
+func _update_combo_visuals(delta: float):
+	"""AAA Upgrade: Update combo visual trail timers."""
+	var i = combo_visual_trails.size() - 1
+	while i >= 0:
+		combo_visual_trails[i]["timer"] += delta
+		if combo_visual_trails[i]["timer"] >= combo_visual_trails[i]["max_time"]:
+			combo_visual_trails.remove_at(i)
+		i -= 1
+
 func _update_squash(delta: float):
 	# AAA Upgrade: Use AnimationConfig parameters
 	var config = AnimationConfig.get_config()
@@ -1535,12 +1902,16 @@ func _update_trail(delta: float):
 		if trail_history[i].alpha <= 0.0:
 			trail_history.remove_at(i)
 		i -= 1
-	# Update impact rings
+	# AAA Upgrade: Update impact rings with expansion
 	i = impact_rings.size() - 1
 	while i >= 0:
 		impact_rings[i].timer -= delta
 		if impact_rings[i].timer <= 0:
 			impact_rings.remove_at(i)
+		else:
+			# Expand radius over time
+			var t = 1.0 - (impact_rings[i].timer / impact_rings[i].max_timer)
+			impact_rings[i].radius = lerpf(impact_rings[i].radius, impact_rings[i].max_radius, t * 0.5)
 		i -= 1
 	# Update slash trails
 	i = melee_slash_trails.size() - 1
@@ -1554,9 +1925,16 @@ func _update_trail(delta: float):
 		landing_dust_timer -= delta
 
 func spawn_impact_ring(offset: Vector2, radius: float, color: Color, width: float):
+	# AAA Upgrade: Enhanced impact rings with expansion and distortion
 	impact_rings.append({
-		"offset": offset, "radius": radius, "color": color,
-		"width": width, "timer": 0.3, "max_timer": 0.3
+		"offset": offset,
+		"radius": radius,
+		"max_radius": radius * 3.0,  # Expand to 3x size
+		"color": color,
+		"width": width,
+		"timer": 0.5,  # Longer lifetime for better visibility
+		"max_timer": 0.5,
+		"distortion": 8.0  # Visual distortion strength
 	})
 
 func spawn_melee_slash(offset: Vector2, color: Color, slash_scale: float = 1.0):
@@ -1612,6 +1990,21 @@ func _draw():
 			)
 			draw_texture(sprite_texture, -tex_size / 2.0, Color(0.4, 0.7, 1.0, ghost.alpha))
 		draw_set_transform(Vector2.ZERO, 0, Vector2.ONE)
+
+	# AAA Upgrade: Draw combo visual trails
+	for trail in combo_visual_trails:
+		_draw_combo_trail(trail)
+
+	# AAA Upgrade: Draw cape/hair trail (spring physics)
+	if cape_trail_points.size() > 1:
+		for i in range(1, cape_trail_points.size()):
+			var alpha = 1.0 - (float(i) / float(cape_trail_points.size()))
+			var trail_offset = cape_trail_points[i] - position
+			var trail_color = Color(0.2, 0.15, 0.3, alpha * 0.4)
+			var trail_width = 4.0 * alpha
+			if i < cape_trail_points.size() - 1:
+				var next_offset = cape_trail_points[i + 1] - position
+				draw_line(trail_offset, next_offset, trail_color, trail_width)
 
 	# Draw dinosaur mount (behind player)
 	if has_dino_mount:
@@ -1786,6 +2179,15 @@ func _draw():
 		else:
 			draw_texture(sprite_texture, -tex_size / 2.0)
 		draw_set_transform(Vector2.ZERO, 0, Vector2.ONE)
+
+	# AAA Upgrade: Draw limb IK (feet)
+	if is_on_ground:
+		# Left foot
+		draw_circle(limb_foot_l, 3.0, Color(0.3, 0.25, 0.2, 0.6))
+		draw_line(Vector2(0, BODY_RADIUS - 5), limb_foot_l, Color(0.3, 0.25, 0.2, 0.4), 2.0)
+		# Right foot
+		draw_circle(limb_foot_r, 3.0, Color(0.3, 0.25, 0.2, 0.6))
+		draw_line(Vector2(0, BODY_RADIUS - 5), limb_foot_r, Color(0.3, 0.25, 0.2, 0.4), 2.0)
 
 	# Draw held weapon at anchor point
 	if weapon_mode == "ranged":
@@ -2070,12 +2472,23 @@ func _draw():
 		var block_col = Color8(100, 200, 255, 150) if block_cooldown <= 0 else Color8(120, 100, 80, 100)
 		draw_string(font, Vector2(-22, 64), "BLOCK", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, block_col)
 
-	# Draw impact rings
+	# AAA Upgrade: Draw impact rings with distortion effect
 	for ring in impact_rings:
 		var t = ring.timer / ring.max_timer
-		var expand = ring.radius * (1.0 + (1.0 - t) * 0.5)
 		var alpha = t * ring.color.a
-		draw_arc(ring.offset, expand, 0, TAU, 32, Color(ring.color.r, ring.color.g, ring.color.b, alpha), ring.width * t)
+		var current_color = Color(ring.color.r, ring.color.g, ring.color.b, alpha)
+
+		# Main ring
+		draw_arc(ring.offset, ring.radius, 0, TAU, 32, current_color, ring.width * t)
+
+		# Distortion effect: Draw offset rings for wave/distortion feel
+		if ring.distortion > 0 and t > 0.3:
+			var distort_offset = ring.distortion * (1.0 - t)
+			var distort_alpha = alpha * 0.4
+			draw_arc(ring.offset, ring.radius - distort_offset, 0, TAU, 24,
+				Color(current_color.r, current_color.g, current_color.b, distort_alpha), ring.width * t * 0.6)
+			draw_arc(ring.offset, ring.radius + distort_offset, 0, TAU, 24,
+				Color(current_color.r, current_color.g, current_color.b, distort_alpha), ring.width * t * 0.6)
 
 	# Draw melee slash trails
 	for slash in melee_slash_trails:
@@ -2096,6 +2509,36 @@ func _draw():
 	if parry_counter_active:
 		var counter_t = parry_counter_timer / PARRY_COUNTER_DURATION
 		draw_circle(Vector2.ZERO, 35.0 * (1.0 - counter_t), Color(1.0, 0.85, 0.0, counter_t * 0.4))
+
+func _draw_combo_trail(trail: Dictionary):
+	"""AAA Upgrade: Draw combo visual trail effect."""
+	var t = trail["timer"] / trail["max_time"]
+	var alpha = 1.0 - t
+	var col = Color(trail["color"].r, trail["color"].g, trail["color"].b, alpha * 0.7)
+	var offset = trail["pos"] - position
+
+	match trail["type"]:
+		"arc":
+			# White arc slash
+			var arc_radius = 30.0 * (1.0 - t * 0.5)
+			var arc_width = PI * 0.6
+			var arc_start = trail["angle"] - arc_width * 0.5
+			draw_arc(offset, arc_radius, arc_start, arc_start + arc_width, 12, col, 3.0)
+		"line":
+			# Yellow thrust trail
+			var line_len = 40.0 * (1.0 - t * 0.3)
+			var dir = Vector2.from_angle(trail["angle"])
+			draw_line(offset, offset + dir * line_len, col, 4.0)
+			draw_circle(offset + dir * line_len, 4.0, Color(col.r, col.g, col.b, alpha * 0.5))
+		"vortex":
+			# Red spinning vortex
+			var vortex_radius = 35.0 * (1.0 - t * 0.4)
+			var spin_angle = t * TAU * 2.0  # 2 full rotations
+			for i in range(3):
+				var spoke_angle = trail["angle"] + spin_angle + (i * TAU / 3.0)
+				var spoke_start = offset + Vector2.from_angle(spoke_angle) * 10.0
+				var spoke_end = offset + Vector2.from_angle(spoke_angle) * vortex_radius
+				draw_line(spoke_start, spoke_end, col, 3.0)
 
 func _draw_grenade_aim_trajectory():
 	"""Draw a parabolic arc preview showing where the grenade will land."""

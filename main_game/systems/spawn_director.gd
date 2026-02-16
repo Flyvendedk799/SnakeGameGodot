@@ -171,6 +171,13 @@ func _spawn_one(zone: Dictionary):
 	else:
 		pos = game.map.get_random_spawn_in_zone(zone)
 	pos = game.map.resolve_collision(pos, enemy.entity_size)
+
+	# Fix spawn position for sideview mode - place enemy on ground
+	if game.map.has_method("get_ground_surface_y"):
+		var ground_y = game.map.get_ground_surface_y(pos, enemy.entity_size)
+		if ground_y > 0:
+			pos.y = ground_y - enemy.entity_size  # Place feet on ground
+
 	enemy.position = pos
 
 	game.enemy_container.add_child(enemy)

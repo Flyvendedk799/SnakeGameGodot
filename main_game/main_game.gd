@@ -52,6 +52,7 @@ var p2_joined: bool = false
 var p2_join_flash_timer: float = 0.0
 var ally_target_counts: Dictionary = {}
 var damage_numbers: Array = []
+var impact_flashes: Array = []  # AAA Upgrade: Brief white flashes at hit points
 var time_elapsed: float = 0.0
 
 enum ShakeCurve { LINEAR, EASE_OUT_QUAD, EASE_OUT_EXPO }
@@ -66,6 +67,14 @@ var hitstop_timer: float = 0.0
 var camera_zoom_pulse: float = 0.0  # -0.02 to +0.02 range
 var camera_zoom_velocity: float = 0.0
 const CAMERA_DEADZONE_X: float = 0.0  # Disabled - was causing stick/catch jitter near pit
+
+# AAA Upgrade: Cinematic camera enhancements
+var camera_tilt: float = 0.0  # Dynamic rotation based on movement
+var camera_tilt_velocity: float = 0.0
+var camera_combat_offset: Vector2 = Vector2.ZERO  # Frame enemies during combat
+var camera_vertical_offset: float = 0.0  # Enhanced vertical positioning
+const CAMERA_TILT_MAX: float = 0.08  # ~4.5 degrees max tilt
+const CAMERA_LOOKAHEAD_MAX: float = 180.0  # More aggressive lookahead
 const CAMERA_DEADZONE_Y: float = 0.0
 var _camera_target_smooth: Vector2 = Vector2.ZERO
 var _camera_smooth_ready: bool = false
@@ -424,6 +433,9 @@ func _process(delta):
 
 	if chromatic_intensity > 0.05:
 		chromatic_intensity = lerpf(chromatic_intensity, 0.0, delta * 8.0)
+	# AAA Upgrade: Decay bloom intensity
+	if fx_draw_node and fx_draw_node.bloom_intensity > 0.05:
+		fx_draw_node.bloom_intensity = lerpf(fx_draw_node.bloom_intensity, 0.0, delta * 4.0)
 	if level_intro_timer > 0:
 		level_intro_timer -= delta
 	if damage_flash_timer > 0:
@@ -495,6 +507,7 @@ func _process_level_active(delta):
 	combat_system.resolve_frame(delta)
 	particles.update(delta)
 	_update_damage_numbers(delta)
+	_update_impact_flashes(delta)
 
 	checkpoint_manager.update(delta)
 	spawn_director.update(delta)
@@ -527,45 +540,94 @@ func _update_linear_camera(delta: float):
 		var spread_x = absf(p1.position.x - p2.position.x)
 		var spread_y = absf(p1.position.y - p2.position.y)
 		var lookahead_anchor = p2 if p2.position.x > p1.position.x else p1
-		var lookahead_x = 50.0 if lookahead_anchor.last_move_dir.x > 0.1 else -30.0
-		target = Vector2(mid.x + lookahead_x, mid.y)
+		var lookahead_x = 80.0 if lookahead_anchor.last_move_dir.x > 0.1 else -50.0
+		target = Vector2(mid.x + lookahead_x, mid.y - 20.0)  # Slight upward bias
 		# Zoom out when players are spread so both fit on screen
-		var min_spread = 180.0
 		var zoom_out = clampf((spread_x + spread_y) / 400.0, 0.0, 0.35)
 		zoom_target = Vector2(camera_base_zoom + zoom_out, camera_base_zoom + zoom_out)
 	else:
-		# Classic side-scroll POV: player roughly centered, slight lookahead in movement direction
+		# AAA Upgrade: Cinematic predictive camera system
 		var anchor = p1
-		var lookahead_x = 60.0 if anchor.last_move_dir.x > 0.1 else -40.0
-		var target_y = anchor.position.y
+
+		# Enhanced velocity-based horizontal lookahead: MORE aggressive (60-180 range)
+		var vel_x = anchor.velocity.x if anchor else 0.0
+		var speed = absf(vel_x)
+		var lookahead_x = sign(vel_x) * clampf(speed / 2.5, 60.0, CAMERA_LOOKAHEAD_MAX)
+
+		# AAA Upgrade: Add facing-based offset even when stationary
+		if speed < 50 and anchor:
+			var facing_dir = 1.0 if anchor.facing_angle > -PI/2 and anchor.facing_angle < PI/2 else -1.0
+			lookahead_x = facing_dir * 70.0  # Look ahead of where player faces
+
+		# AAA Upgrade: Enhanced vertical framing with more dramatic positioning
+		var vel_y = anchor.velocity.y if anchor else 0.0
+		var lookahead_y = 0.0
+		camera_vertical_offset = lerpf(camera_vertical_offset, 0.0, delta * 3.0)
+
+		if vel_y < -250:  # Jumping - show MUCH more above
+			lookahead_y = -60.0
+			camera_vertical_offset = -20.0
+		elif vel_y > 350:  # Falling fast - show more below
+			lookahead_y = 50.0
+			camera_vertical_offset = 15.0
+		elif anchor.is_on_ground:
+			lookahead_y = 15.0  # Ground bias - show more above when grounded
+
+		# AAA Upgrade: Combat-aware framing - include nearest enemies
+		var combat_frame = Vector2.ZERO
+		if anchor.is_attacking_melee or anchor.is_dashing:
+			var nearest_enemy = _get_nearest_enemy_in_range(anchor.position, 200.0)
+			if nearest_enemy:
+				var to_enemy = nearest_enemy.position - anchor.position
+				combat_frame = to_enemy * 0.15  # Frame 15% toward enemy
+		camera_combat_offset = camera_combat_offset.lerp(combat_frame, delta * 4.0)
+
+		var target_y = anchor.position.y + lookahead_y + camera_vertical_offset
 		# Use ground surface Y when grounded - eliminates pit/edge jitter from collision bounce
 		if anchor.is_on_ground and map.has_method("get_ground_surface_y"):
 			var surface_y = map.get_ground_surface_y(anchor.position, 26.0)
 			if surface_y < INF:
-				target_y = surface_y - 26.0  # Player center height (BODY_RADIUS)
-		target = Vector2(anchor.position.x + lookahead_x, target_y)
+				target_y = surface_y - 26.0 + lookahead_y + camera_vertical_offset
+
+		target = Vector2(anchor.position.x + lookahead_x, target_y) + camera_combat_offset
 
 	var half_w = (get_viewport_rect().size.x / 2.0) / maxf(zoom_target.x, 0.1)
 	var half_h = (get_viewport_rect().size.y / 2.0) / maxf(zoom_target.y, 0.1)
 	target.x = clampf(target.x, half_w, map.level_width - half_w)
 	target.y = clampf(target.y, half_h, map.level_height - half_h)
 
-	# Smooth target BEFORE dead zone to avoid boundary oscillation
-	const SMOOTH_X = 0.28
-	const SMOOTH_Y = 0.18  # Stronger Y smoothing (platform edges cause more Y jitter)
+	# AAA Upgrade: Enhanced cinematic smoothing with dual-stage easing
+	const SMOOTH_X = 0.35  # Looser for more fluid motion
+	const SMOOTH_Y = 0.25  # Less rigid vertical tracking
 	if not _camera_smooth_ready:
 		_camera_target_smooth = target
 		_camera_smooth_ready = true
 	else:
-		_camera_target_smooth.x = lerpf(_camera_target_smooth.x, target.x, SMOOTH_X)
-		_camera_target_smooth.y = lerpf(_camera_target_smooth.y, target.y, SMOOTH_Y)
+		# Smoothstep for more cinematic easing
+		var smooth_x = smoothstep(0.0, 1.0, SMOOTH_X)
+		var smooth_y = smoothstep(0.0, 1.0, SMOOTH_Y)
+		_camera_target_smooth.x = lerpf(_camera_target_smooth.x, target.x, smooth_x)
+		_camera_target_smooth.y = lerpf(_camera_target_smooth.y, target.y, smooth_y)
 
-	# No dead zone - it caused stick/catch oscillation near pit; smoothing handles micro-jitter
 	var effective_target = _camera_target_smooth
 
-	# Apply zoom pulse to zoom target
+	# AAA Upgrade: Action-based dynamic zoom
+	var action_zoom = 1.0
+	if p1 and not p1.is_dead:
+		# Zoom out when sprinting for speed emphasis
+		if p1.is_sprinting and absf(p1.velocity.x) > 200:
+			action_zoom += 0.08
+		# Zoom in slightly during combat for intensity
+		elif p1.is_attacking_melee:
+			action_zoom -= 0.03
+		# Zoom out during ground pound fall
+		elif p1.get("is_ground_pounding") and p1.is_ground_pounding:
+			action_zoom += 0.12
+
+	# Apply zoom pulse and action zoom to zoom target
 	var pulse_zoom = Vector2(1.0 + camera_zoom_pulse, 1.0 + camera_zoom_pulse)
-	zoom_target *= pulse_zoom
+	var dynamic_zoom = Vector2(action_zoom, action_zoom)
+	zoom_target *= pulse_zoom * dynamic_zoom
 
 	# Cap delta to prevent camera jumpiness during frame drops (e.g. when jumping right)
 	var safe_delta = minf(delta, 0.05)
@@ -591,6 +653,37 @@ func _update_linear_camera(delta: float):
 	# Zoom with spring ease (use safe_delta to avoid jerk during frame drops)
 	var zoom_ease = ease_out_spring(safe_delta * 5.0)
 	game_camera.zoom = game_camera.zoom.lerp(zoom_target, zoom_ease)
+
+	# AAA Upgrade: Dynamic camera tilt based on velocity for cinematic feel
+	var target_tilt = 0.0
+	if p1 and not p1.is_dead:
+		# Tilt camera in direction of fast movement (like car racing games)
+		var vel_x = p1.velocity.x
+		if absf(vel_x) > 150:
+			target_tilt = -sign(vel_x) * clampf(absf(vel_x) / 600.0, 0.0, 1.0) * CAMERA_TILT_MAX
+		# Extra tilt during dash for emphasis
+		if p1.is_dashing:
+			target_tilt *= 1.8
+	# Spring physics for smooth tilt
+	var tilt_force = (target_tilt - camera_tilt) * 25.0
+	camera_tilt_velocity += tilt_force * delta
+	camera_tilt_velocity *= exp(-15.0 * delta)  # Dampening
+	camera_tilt += camera_tilt_velocity * delta
+	game_camera.rotation = camera_tilt
+
+func _get_nearest_enemy_in_range(from_pos: Vector2, max_range: float):
+	"""AAA Upgrade: Find nearest enemy for combat-aware camera framing."""
+	var nearest = null
+	var nearest_dist_sq = max_range * max_range
+	var candidates = enemy_container.get_children()
+	for enemy in candidates:
+		if enemy.state == EnemyEntity.EnemyState.DEAD or enemy.state == EnemyEntity.EnemyState.DYING:
+			continue
+		var dist_sq = from_pos.distance_squared_to(enemy.position)
+		if dist_sq < nearest_dist_sq:
+			nearest_dist_sq = dist_sq
+			nearest = enemy
+	return nearest
 
 func _log_camera_snapshot(delta: float):
 	var dl = get_node_or_null("/root/DebugLogger")
@@ -647,14 +740,29 @@ func resume_from_shop():
 func start_hitstop(duration: float, intensity: float = 1.0):
 	"""AAA Upgrade: Enhanced hitstop with variable intensity.
 	intensity: 0.5 (light) to 2.0 (heavy) - affects timescale."""
+	# Skip hitstop if duration is too small (< 10ms)
+	if duration < 0.01:
+		return
 	hitstop_timer = duration
 	var timescale = lerpf(0.25, 0.05, clampf(intensity - 0.5, 0.0, 1.5) / 1.5)
 	Engine.time_scale = timescale
 
-func spawn_damage_number(pos: Vector2, text: String, color: Color):
+func trigger_bloom(intensity: float = 1.0):
+	"""AAA Upgrade: Trigger bloom glow effect."""
+	if fx_draw_node:
+		fx_draw_node.bloom_intensity = intensity
+
+func trigger_camera_zoom_pulse(strength: float):
+	"""AAA Upgrade: Trigger camera FOV pulse. Negative = zoom out, positive = zoom in."""
+	camera_zoom_pulse += strength * 0.01  # Scale to -0.02 to +0.02 range
+	camera_zoom_pulse = clampf(camera_zoom_pulse, -0.04, 0.04)
+
+func spawn_damage_number(pos: Vector2, text: String, color: Color, use_bounce: bool = false):
+	"""AAA Upgrade: Enhanced with optional spring bounce physics."""
 	if damage_numbers.size() >= 40:
 		damage_numbers.pop_front()
-	damage_numbers.append({
+
+	var number_data = {
 		"position": pos + Vector2(randf_range(-12, 12), -10),
 		"text": text,
 		"color": color,
@@ -664,6 +772,28 @@ func spawn_damage_number(pos: Vector2, text: String, color: Color):
 		"rotation": randf_range(-0.15, 0.15),
 		"drift_phase": randf_range(0, TAU),
 		"drift_speed": randf_range(2.0, 4.0),
+	}
+
+	# AAA Upgrade: Bounce physics for impactful hits
+	if use_bounce:
+		number_data["bounce_velocity"] = Vector2(randf_range(-40, 40), -150.0)
+		number_data["bounce_gravity"] = 300.0
+		number_data["bounce_dampening"] = 0.6
+		number_data["bounce_pos_offset"] = Vector2.ZERO
+
+	damage_numbers.append(number_data)
+
+func spawn_impact_flash(pos: Vector2, duration: float = 0.15, color: Color = Color.WHITE):
+	"""AAA Upgrade: Spawn a brief flash at impact point for visual punch."""
+	if impact_flashes.size() >= 20:
+		impact_flashes.pop_front()
+	impact_flashes.append({
+		"position": pos,
+		"timer": duration,
+		"max_duration": duration,
+		"color": color,
+		"radius_start": 10.0,
+		"radius_end": 40.0,
 	})
 
 func start_shake(intensity: float, duration: float, curve: ShakeCurve = ShakeCurve.EASE_OUT_QUAD):
@@ -707,9 +837,32 @@ func _update_damage_numbers(delta: float):
 	while i >= 0:
 		var dn = damage_numbers[i]
 		dn.timer -= delta
-		dn.position.y += dn.velocity_y * delta
+
+		# AAA Upgrade: Spring bounce physics for impactful hits
+		if dn.has("bounce_velocity"):
+			dn.bounce_velocity.y += dn.bounce_gravity * delta
+			dn.bounce_pos_offset += dn.bounce_velocity * delta
+			# Simple ground bounce
+			if dn.bounce_pos_offset.y > 0:
+				dn.bounce_pos_offset.y = 0
+				dn.bounce_velocity.y = -dn.bounce_velocity.y * dn.bounce_dampening
+				dn.bounce_velocity.x *= dn.bounce_dampening
+		else:
+			# Standard vertical rise
+			dn.position.y += dn.velocity_y * delta
+
 		if dn.timer <= 0:
 			damage_numbers.remove_at(i)
+		i -= 1
+
+func _update_impact_flashes(delta: float):
+	"""AAA Upgrade: Update brief impact flashes for visual punch."""
+	var i = impact_flashes.size() - 1
+	while i >= 0:
+		var flash = impact_flashes[i]
+		flash.timer -= delta
+		if flash.timer <= 0:
+			impact_flashes.remove_at(i)
 		i -= 1
 
 func resume_from_level_up():
@@ -788,7 +941,9 @@ func _draw():
 			var col = dn.color
 			col.a = alpha
 			var drift_x = sin(time_elapsed * dn.get("drift_speed", 3.0) + dn.get("drift_phase", 0.0)) * 8.0
-			var pos = dn.position + shake_offset + Vector2(drift_x, 0)
+			# AAA Upgrade: Add bounce offset for spring physics
+			var bounce_offset = dn.get("bounce_pos_offset", Vector2.ZERO)
+			var pos = dn.position + shake_offset + Vector2(drift_x, 0) + bounce_offset
 			var life_frac = clampf(dn.timer / 0.9, 0.0, 1.0)
 			var sc = lerpf(1.0, dn.get("scale", 2.0), clampf(life_frac * 2.0, 0.0, 1.0))
 			var rot = dn.get("rotation", 0.0)
@@ -796,3 +951,16 @@ func _draw():
 			draw_string(font, Vector2(1, 1), dn.text, HORIZONTAL_ALIGNMENT_LEFT, -1, 22, Color(0, 0, 0, alpha * 0.6))
 			draw_string(font, Vector2.ZERO, dn.text, HORIZONTAL_ALIGNMENT_LEFT, -1, 22, col)
 			draw_set_transform(Vector2.ZERO, 0, Vector2.ONE)
+
+	# AAA Upgrade: Draw impact flashes for visual punch
+	for flash in impact_flashes:
+		var t = 1.0 - (flash.timer / flash.max_duration)  # 0 to 1
+		var radius = lerpf(flash.radius_start, flash.radius_end, t)
+		var alpha = 1.0 - t  # Fade out
+		var col = flash.color
+		col.a = alpha * 0.4
+		var pos = flash.position + shake_offset
+		# Draw expanding flash ring
+		draw_circle(pos, radius, col)
+		# Brighter center
+		draw_circle(pos, radius * 0.5, Color(col.r, col.g, col.b, alpha * 0.6))

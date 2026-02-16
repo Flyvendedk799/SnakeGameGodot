@@ -1,16 +1,28 @@
 class_name KarenSfxPlayer
 extends Node
 
-var player1: AudioStreamPlayer
-var player2: AudioStreamPlayer
+# AAA Upgrade: Multiple audio players for layered sound
+var players: Array[AudioStreamPlayer] = []
+var ambience_player: AudioStreamPlayer
+var music_player: AudioStreamPlayer
 var sounds: Dictionary = {}
-var use_player2: bool = false
+var player_priorities: Array[int] = []  # Track priority of currently playing sounds
 
 func _ready():
-	player1 = AudioStreamPlayer.new()
-	player2 = AudioStreamPlayer.new()
-	add_child(player1)
-	add_child(player2)
+	# Create 4 general-purpose players for SFX
+	for i in range(4):
+		var p = AudioStreamPlayer.new()
+		add_child(p)
+		players.append(p)
+		player_priorities.append(0)
+
+	# Dedicated ambience loop player
+	ambience_player = AudioStreamPlayer.new()
+	add_child(ambience_player)
+
+	# Dedicated music player
+	music_player = AudioStreamPlayer.new()
+	add_child(music_player)
 	# Pre-generate all game sounds
 	sounds["swing"] = _generate_wav(200.0, 0.12, "saw", 400.0, 0.3)
 	sounds["shoot"] = _generate_wav(800.0, 0.08, "square", 400.0, 0.3)
@@ -47,6 +59,11 @@ func _ready():
 	sounds["jump"] = _generate_wav(450.0, 0.12, "sine", 600.0, 0.3)
 	sounds["land"] = _generate_wav(120.0, 0.08, "saw", 60.0, 0.25)
 
+	# AAA Upgrade: Ambient sound loops
+	sounds["ambient_wind"] = _generate_ambient_loop("wind", 4.0)
+	sounds["ambient_cave"] = _generate_ambient_loop("cave", 4.0)
+	sounds["ambient_factory"] = _generate_ambient_loop("factory", 4.0)
+
 func _generate_wav(frequency: float, duration: float, wave_type: String, freq_end: float = -1.0, volume: float = 0.5) -> AudioStreamWAV:
 	if freq_end < 0:
 		freq_end = frequency
@@ -79,12 +96,40 @@ func _generate_wav(frequency: float, duration: float, wave_type: String, freq_en
 	stream.data = data
 	return stream
 
-func _play(sound_name: String):
-	if sounds.has(sound_name):
-		var p = player2 if use_player2 else player1
-		use_player2 = !use_player2
-		p.stream = sounds[sound_name]
-		p.play()
+func _find_available_player(priority: int = 0) -> AudioStreamPlayer:
+	"""AAA Upgrade: Find free player or lowest priority one."""
+	# First, try to find a free player
+	for i in range(players.size()):
+		if not players[i].playing:
+			player_priorities[i] = priority
+			return players[i]
+
+	# If all busy, find lowest priority player
+	var lowest_idx = 0
+	var lowest_priority = player_priorities[0]
+	for i in range(1, players.size()):
+		if player_priorities[i] < lowest_priority:
+			lowest_priority = player_priorities[i]
+			lowest_idx = i
+
+	# Only interrupt if new sound has higher priority
+	if priority >= lowest_priority:
+		player_priorities[lowest_idx] = priority
+		return players[lowest_idx]
+
+	# Otherwise use first player (shouldn't happen often)
+	return players[0]
+
+func _play(sound_name: String, priority: int = 0, pitch_var: float = 0.05):
+	"""AAA Upgrade: Play sound with priority and pitch variation."""
+	if not sounds.has(sound_name):
+		return
+
+	var p = _find_available_player(priority)
+	# AAA Upgrade: Random pitch variation for variety
+	p.pitch_scale = 1.0 + randf_range(-pitch_var, pitch_var)
+	p.stream = sounds[sound_name]
+	p.play()
 
 func play_swing(): _play("swing")
 func play_shoot(): _play("shoot")
@@ -121,3 +166,84 @@ func play_weapon_wheel_select(): _play("weapon_wheel_select")
 func play_hammer_hit(): _play("hammer_hit")
 func play_jump(): _play("jump")
 func play_land(): _play("land")
+
+func play_hit_at_position(pos: Vector2, camera_pos: Vector2):
+	"""AAA Upgrade: Spatial audio - play hit sound with distance/position."""
+	var dist = pos.distance_to(camera_pos)
+	# Volume falloff: 100% at 0, 0% at 1000
+	var volume_scale = clampf(1.0 - (dist / 1000.0), 0.0, 1.0)
+
+	if volume_scale < 0.05:
+		return  # Too far, don't play
+
+	var p = _find_available_player(1)  # Medium priority
+
+	# AAA Upgrade: Pitch modulation by distance (closer = higher pitch)
+	p.pitch_scale = lerpf(0.95, 1.05, volume_scale)
+	# Volume adjustment
+	p.volume_db = linear_to_db(volume_scale)
+	p.stream = sounds["hit"]
+	p.play()
+
+	# Reset volume after playing (for next sound)
+	await p.finished
+	p.volume_db = 0.0
+
+func _generate_ambient_loop(type: String, duration: float) -> AudioStreamWAV:
+	"""AAA Upgrade: Generate looping ambient sounds for atmosphere."""
+	var sample_rate := 22050
+	var num_samples := int(duration * sample_rate)
+	var data := PackedByteArray()
+	data.resize(num_samples * 2)
+
+	for i in range(num_samples):
+		var t := float(i) / float(sample_rate)
+		var sample := 0.0
+
+		match type:
+			"wind":
+				# Layered noise for wind with slow undulation
+				sample = randf_range(-0.3, 0.3)  # Base noise
+				sample += sin(t * 0.5) * 0.1  # Slow wave
+				sample += sin(t * 1.2) * 0.05  # Medium wave
+			"cave":
+				# Water drips with echo
+				var drip_interval = 2.0  # Drip every 2 seconds
+				var drip_phase = fmod(t, drip_interval)
+				if drip_phase < 0.05:
+					# Sharp drip sound
+					sample = sin(drip_phase * 100.0) * 0.4 * (1.0 - drip_phase / 0.05)
+				# Ambient cave reverb
+				sample += randf_range(-0.1, 0.1)
+			"factory":
+				# Industrial hum with mechanical rhythm
+				sample = sin(t * 60.0 * TAU) * 0.15  # 60Hz hum
+				sample += sin(t * 120.0 * TAU) * 0.08  # Harmonic
+				# Mechanical clanks
+				var clank_phase = fmod(t, 1.5)
+				if clank_phase < 0.02:
+					sample += randf_range(-0.3, 0.3)
+
+		sample *= 0.15  # Keep ambient quiet
+		var value := int(clampf(sample, -1.0, 1.0) * 32767.0)
+		data[i * 2] = value & 0xFF
+		data[i * 2 + 1] = (value >> 8) & 0xFF
+
+	var stream := AudioStreamWAV.new()
+	stream.format = AudioStreamWAV.FORMAT_16_BITS
+	stream.mix_rate = sample_rate
+	stream.loop_mode = AudioStreamWAV.LOOP_FORWARD  # Enable looping
+	stream.data = data
+	return stream
+
+func play_ambient_loop(theme: String):
+	"""AAA Upgrade: Start playing ambient loop for theme."""
+	var sound_key = "ambient_" + theme
+	if sounds.has(sound_key):
+		ambience_player.stream = sounds[sound_key]
+		ambience_player.volume_db = -18.0  # Quiet background layer
+		ambience_player.play()
+
+func stop_ambient():
+	"""Stop ambient loop."""
+	ambience_player.stop()
