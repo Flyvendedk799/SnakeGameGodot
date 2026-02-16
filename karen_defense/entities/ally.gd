@@ -272,13 +272,13 @@ func _update_coin_collector(delta: float, game):
 
 func _find_nearest_gold(game):
 	var best = null
-	var best_dist = INF
+	var best_dist_sq = INF
 	for gold in game.gold_container.get_children():
 		if not is_instance_valid(gold):
 			continue
-		var d = position.distance_to(gold.position)
-		if d < best_dist:
-			best_dist = d
+		var d_sq = position.distance_squared_to(gold.position)
+		if d_sq < best_dist_sq:
+			best_dist_sq = d_sq
 			best = gold
 	return best
 
@@ -290,23 +290,25 @@ const OUTSIDE_ALLY_SEEK_RANGE: float = 550.0  # Gate Guard etc. seek within this
 
 func _find_nearest_enemy_any_distance(game) -> EnemyEntity:
 	var best: EnemyEntity = null
-	var best_dist: float = INF
+	var best_dist_sq: float = INF
+	var out_range_sq = OUTSIDE_ALLY_SEEK_RANGE * OUTSIDE_ALLY_SEEK_RANGE
+	var max_seek_sq = MAX_SEEK_DISTANCE * MAX_SEEK_DISTANCE
 	for enemy in game.enemy_container.get_children():
 		if not _is_valid_target(enemy):
 			continue
-		var dist_to_me = position.distance_to(enemy.position)
+		var dist_sq = position.distance_squared_to(enemy.position)
 		if is_outside_ally:
-			if dist_to_me > OUTSIDE_ALLY_SEEK_RANGE:
+			if dist_sq > out_range_sq:
 				continue
 		else:
 			if game.map.has_method("get_player_anchor"):
 				var anchor = game.map.get_player_anchor()
 				if enemy.position.x < anchor.x - 350 or enemy.position.x > anchor.x + 550:
 					continue
-			elif enemy.position.distance_to(game.map.get_fort_center()) > MAX_SEEK_DISTANCE:
+			elif enemy.position.distance_squared_to(game.map.get_fort_center()) > max_seek_sq:
 				continue
-		if dist_to_me < best_dist:
-			best_dist = dist_to_me
+		if dist_sq < best_dist_sq:
+			best_dist_sq = dist_sq
 			best = enemy
 	return best
 
@@ -314,13 +316,15 @@ func _find_best_enemy(game) -> EnemyEntity:
 	var best: EnemyEntity = null
 	var best_score: float = 999999.0
 	var center_x = game.map.get_player_anchor().x if game.map.has_method("get_player_anchor") else 640.0
-	var max_seek_from_ally = detect_range * 2.0 if is_outside_ally else detect_range * 1.5
+	var max_seek = detect_range * 2.0 if is_outside_ally else detect_range * 1.5
+	var max_seek_sq = max_seek * max_seek
 	for enemy in game.enemy_container.get_children():
 		if not _is_valid_target(enemy):
 			continue
-		var dist_to_me = position.distance_to(enemy.position)
-		if dist_to_me > max_seek_from_ally:
+		var dist_sq = position.distance_squared_to(enemy.position)
+		if dist_sq > max_seek_sq:
 			continue
+		var dist_to_me = sqrt(dist_sq)  # Only sqrt for score
 		# Score: prioritize nearby enemies, but also enemies closer to map center (deeper in)
 		var threat = abs(enemy.position.x - center_x)  # Lower = deeper in = higher threat
 		var score = dist_to_me * 0.6 + threat * 0.4

@@ -64,8 +64,14 @@ var hitstop_timer: float = 0.0
 # Camera zoom pulse (AAA upgrade)
 var camera_zoom_pulse: float = 0.0  # -0.02 to +0.02 range
 var camera_zoom_velocity: float = 0.0
-const CAMERA_DEADZONE_X: float = 40.0
-const CAMERA_DEADZONE_Y: float = 25.0
+const CAMERA_DEADZONE_X: float = 0.0  # Disabled - was causing stick/catch jitter near pit
+const CAMERA_DEADZONE_Y: float = 0.0
+var _camera_target_smooth: Vector2 = Vector2.ZERO
+var _camera_smooth_ready: bool = false
+var _debug_camera_timer: float = 0.0
+var _debug_cam_target: Vector2 = Vector2.ZERO
+var _debug_cam_smooth: Vector2 = Vector2.ZERO
+var _debug_cam_effective: Vector2 = Vector2.ZERO
 var radar_reveal_timer: float = 0.0  # HUD minimap compatibility (Karen Defense radar)
 var combo_meter: float = 0.0  # HUD combo display compatibility (Karen Defense)
 var combo_level: int = 0
@@ -86,6 +92,7 @@ var current_map_id: int = 1  # Alias for game_over_screen compatibility
 var is_sideview_game: bool = true  # Main Game uses front-view platformer movement
 var victory_display_timer: float = 0.0
 var current_wave: int = 0  # Stub for HUD compatibility
+var wave_complete_pending: bool = false  # Stub for HUD (Main Game has no waves)
 var wave_announce_timer: float = 0.0
 var enemies_killed_total: int = 0  # game_over_screen, enemy.gd
 var total_gold_earned: int = 0  # game_over_screen
@@ -352,6 +359,10 @@ func _process(delta):
 		damage_flash_timer -= delta
 	if state == GameState.LEVEL_ACTIVE:
 		_update_linear_camera(delta)
+		_debug_camera_timer += delta
+		if _debug_camera_timer >= 5.0:
+			_debug_camera_timer = 0.0
+			_log_camera_snapshot(delta)
 	map.anim_time += delta
 	if map:
 		map.queue_redraw()
@@ -386,6 +397,8 @@ func _process_level_active(delta):
 	for ally in allies:
 		ally.update_ally(delta, self)
 
+	# Reset pathfinding budget each frame (limits A* runs to prevent 1 FPS freeze)
+	EnemyEntity._pathfind_budget = 3
 	var enemies = enemy_container.get_children()
 	for enemy in enemies:
 		enemy.update_enemy(delta, self)
@@ -452,39 +465,82 @@ func _update_linear_camera(delta: float):
 		# Classic side-scroll POV: player roughly centered, slight lookahead in movement direction
 		var anchor = p1
 		var lookahead_x = 60.0 if anchor.last_move_dir.x > 0.1 else -40.0
-		target = Vector2(anchor.position.x + lookahead_x, anchor.position.y)
-
-	# Apply camera dead zone (reduce jitter from micro-adjustments)
-	var dx = target.x - game_camera.position.x
-	var dy = target.y - game_camera.position.y
-	if absf(dx) < CAMERA_DEADZONE_X:
-		target.x = game_camera.position.x
-	if absf(dy) < CAMERA_DEADZONE_Y:
-		target.y = game_camera.position.y
+		var target_y = anchor.position.y
+		# Use ground surface Y when grounded - eliminates pit/edge jitter from collision bounce
+		if anchor.is_on_ground and map.has_method("get_ground_surface_y"):
+			var surface_y = map.get_ground_surface_y(anchor.position, 26.0)
+			if surface_y < INF:
+				target_y = surface_y - 26.0  # Player center height (BODY_RADIUS)
+		target = Vector2(anchor.position.x + lookahead_x, target_y)
 
 	var half_w = (get_viewport_rect().size.x / 2.0) / maxf(zoom_target.x, 0.1)
 	var half_h = (get_viewport_rect().size.y / 2.0) / maxf(zoom_target.y, 0.1)
 	target.x = clampf(target.x, half_w, map.level_width - half_w)
 	target.y = clampf(target.y, half_h, map.level_height - half_h)
 
+	# Smooth target BEFORE dead zone to avoid boundary oscillation
+	const SMOOTH_X = 0.28
+	const SMOOTH_Y = 0.18  # Stronger Y smoothing (platform edges cause more Y jitter)
+	if not _camera_smooth_ready:
+		_camera_target_smooth = target
+		_camera_smooth_ready = true
+	else:
+		_camera_target_smooth.x = lerpf(_camera_target_smooth.x, target.x, SMOOTH_X)
+		_camera_target_smooth.y = lerpf(_camera_target_smooth.y, target.y, SMOOTH_Y)
+
+	# No dead zone - it caused stick/catch oscillation near pit; smoothing handles micro-jitter
+	var effective_target = _camera_target_smooth
+
 	# Apply zoom pulse to zoom target
 	var pulse_zoom = Vector2(1.0 + camera_zoom_pulse, 1.0 + camera_zoom_pulse)
 	zoom_target *= pulse_zoom
 
-	# Smooth camera follow with ease curves for AAA feel
-	var follow_speed = 8.0  # Increased from 6.0 for snappier tracking
-	var ease_factor = ease_out_expo(delta * follow_speed)
-	game_camera.position = game_camera.position.lerp(target, ease_factor)
+	# Cap delta to prevent camera jumpiness during frame drops (e.g. when jumping right)
+	var safe_delta = minf(delta, 0.05)
+	# Slower vertical follow: dampen during jumps, extra dampen when grounded (platform/pit edges)
+	var y_speed_mult = 1.0
+	if p1 and not p1.is_dead:
+		if absf(p1.velocity.y) > 150:
+			y_speed_mult = 0.6  # Jumps/falls
+		elif p1.is_on_ground:
+			y_speed_mult = 0.45  # Grounded - very slow Y follow for stable camera near pits
+	var follow_speed = 8.0
+	var ease_x = ease_out_expo(safe_delta * follow_speed)
+	var ease_y = ease_out_expo(safe_delta * follow_speed * y_speed_mult)
+	var new_x = lerpf(game_camera.position.x, effective_target.x, ease_x)
+	var new_y = lerpf(game_camera.position.y, effective_target.y, ease_y)
+	game_camera.position = Vector2(new_x, new_y)
 
-	# Zoom with spring ease
-	var zoom_ease = ease_out_spring(delta * 5.0)
+	# Store for debug snapshot
+	_debug_cam_target = target
+	_debug_cam_smooth = _camera_target_smooth
+	_debug_cam_effective = effective_target
+
+	# Zoom with spring ease (use safe_delta to avoid jerk during frame drops)
+	var zoom_ease = ease_out_spring(safe_delta * 5.0)
 	game_camera.zoom = game_camera.zoom.lerp(zoom_target, zoom_ease)
 
-func trigger_camera_zoom_pulse(intensity: float):
-	"""Trigger camera zoom pulse with spring physics.
-	intensity: -1.0 (zoom in) to 1.0 (zoom out)"""
-	camera_zoom_pulse = intensity * 0.02
-	camera_zoom_velocity = 0.0
+func _log_camera_snapshot(delta: float):
+	var dl = get_node_or_null("/root/DebugLogger")
+	if not dl:
+		return
+	var p = player_node
+	var px = p.position.x if p else 0.0
+	var py = p.position.y if p else 0.0
+	var vx = p.velocity.x if p else 0.0
+	var vy = p.velocity.y if p else 0.0
+	var fps = Engine.get_frames_per_second()
+	var pt_ms = Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0
+	var buf = []
+	buf.append("--- Main Game Snapshot ---")
+	buf.append("FPS: %d  Process: %.1f ms  Delta: %.4f" % [fps, pt_ms, delta])
+	buf.append("Camera: (%.0f, %.0f)  Player: (%.1f, %.1f)  Vel: (%.1f, %.1f)" % [game_camera.position.x, game_camera.position.y, px, py, vx, vy])
+	buf.append("Target: (%.1f, %.1f)  Smoothed: (%.1f, %.1f)  Effective: (%.1f, %.1f)" % [_debug_cam_target.x, _debug_cam_target.y, _debug_cam_smooth.x, _debug_cam_smooth.y, _debug_cam_effective.x, _debug_cam_effective.y])
+	var grounded = p.is_on_ground if p else false
+	buf.append("Grounded: %s  Using ground-surface Y for cam: %s" % [grounded, grounded and map.has_method("get_ground_surface_y")])
+	buf.append("Entities: allies=%d enemies=%d projs=%d" % [ally_container.get_child_count(), enemy_container.get_child_count(), projectile_container.get_child_count()])
+	for line in buf:
+		dl.write_log(line)
 
 func _on_level_complete():
 	state = GameState.VICTORY

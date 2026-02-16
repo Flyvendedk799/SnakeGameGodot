@@ -38,13 +38,13 @@ func _check_player_melee_hits():
 		var hits = 0
 		# Combo hit 3 (spin) can hit more targets
 		var max_targets = p.max_melee_targets + (2 if combo_idx == 2 else 0)
+		var range_sq = p.melee_range * p.melee_range
 		for enemy in game.enemy_container.get_children():
 			if hits >= max_targets:
 				break
 			if enemy.state == EnemyEntity.EnemyState.DEAD or enemy.state == EnemyEntity.EnemyState.DYING:
 				continue
-			var dist = p.position.distance_to(enemy.position)
-			if dist > p.melee_range:
+			if p.position.distance_squared_to(enemy.position) > range_sq:
 				continue
 			# Main Game: melee only hits same-tier enemies
 			if game.has_method("can_deal_damage_to") and not game.can_deal_damage_to(p, enemy):
@@ -97,7 +97,8 @@ func _check_projectile_hits():
 			for enemy in game.enemy_container.get_children():
 				if enemy.state == EnemyEntity.EnemyState.DEAD or enemy.state == EnemyEntity.EnemyState.DYING:
 					continue
-				if proj.position.distance_to(enemy.position) < enemy.entity_size + proj.SIZE:
+				var threshold = enemy.entity_size + proj.SIZE
+				if proj.position.distance_squared_to(enemy.position) < threshold * threshold:
 					if proj.get("owner_player") and is_instance_valid(proj.owner_player):
 						enemy.last_damager = proj.owner_player
 					enemy.take_damage(proj.damage, game)
@@ -119,7 +120,8 @@ func _check_projectile_hits():
 			# Check all active players
 			var hit_player = false
 			for p in active_players:
-				if proj.position.distance_to(p.position) < p.BODY_RADIUS + proj.SIZE:
+				var thresh = p.BODY_RADIUS + proj.SIZE
+				if proj.position.distance_squared_to(p.position) < thresh * thresh:
 					p.take_damage(proj.damage, game)
 					proj.queue_free()
 					hit_player = true
@@ -130,25 +132,27 @@ func _check_projectile_hits():
 			for ally in game.ally_container.get_children():
 				if ally.current_hp <= 0:
 					continue
-				if proj.position.distance_to(ally.position) < ally.entity_size + proj.SIZE:
+				var thresh = ally.entity_size + proj.SIZE
+				if proj.position.distance_squared_to(ally.position) < thresh * thresh:
 					ally.take_damage_ally(proj.damage, game)
 					proj.queue_free()
 					break
 
 func _check_gold_pickups():
 	var active_players = _get_active_players()
+	var pickup_radius_sq = 35.0 * 35.0
 	for gold in game.gold_container.get_children():
 		var picked = false
 		# Magnet pull toward nearest player with magnet
 		for p in active_players:
-			var dist = p.position.distance_to(gold.position)
-			if p.has_magnet and dist < p.magnet_radius and dist > 35:
+			var dist_sq = p.position.distance_squared_to(gold.position)
+			var magnet_sq = p.magnet_radius * p.magnet_radius
+			if p.has_magnet and dist_sq < magnet_sq and dist_sq > pickup_radius_sq:
 				var pull_dir = (p.position - gold.position).normalized()
 				gold.position += pull_dir * 250.0 * frame_delta
 		# Pickup by nearest player
 		for p in active_players:
-			var dist = p.position.distance_to(gold.position)
-			if dist < 35:
+			if p.position.distance_squared_to(gold.position) < pickup_radius_sq:
 				var amount = int(gold.amount * p.gold_multiplier)
 				game.economy.add_gold(amount, p.player_index)
 				if game.sfx:

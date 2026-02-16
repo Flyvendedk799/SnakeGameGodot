@@ -570,7 +570,7 @@ func _handle_grapple(delta, game):
 	if Input.is_action_just_pressed(action_prefix + "grapple") and grapple_cooldown <= 0 and not is_dead and not is_dashing:
 		var result = _find_grapple_target(game)
 		var target_pos = result.position if result is Dictionary else result
-		var use_swing = true  # All grapples use swing mechanic
+		var _use_swing = true  # All grapples use swing mechanic
 		if target_pos != Vector2.ZERO:
 			is_grappling = true
 			grapple_target = target_pos
@@ -615,7 +615,7 @@ func _find_grapple_target(game) -> Dictionary:
 
 	return {"position": best_target, "is_chain_link": best_is_chain}
 
-func _handle_block(delta, game):
+func _handle_block(delta, _game):
 	block_cooldown = maxf(0, block_cooldown - delta)
 	block_flash_timer = maxf(0, block_flash_timer - delta)
 	# Regenerate block stamina when not blocking
@@ -657,10 +657,10 @@ func _handle_movement(delta, game):
 		# Add dash trail ghost
 		if dash_trail.size() == 0 or position.distance_to(dash_trail[-1].pos) > 8.0:
 			dash_trail.append({"pos": position, "alpha": 0.5, "angle": facing_angle})
-		var world_w = game.map.SCREEN_W if game else 1280.0
-		var world_h = game.map.SCREEN_H if game else 720.0
-		position.x = clampf(position.x, 15, world_w - 15)
-		position.y = clampf(position.y, 15, world_h - 15)
+		var bound_w = game.map.SCREEN_W if game else 1280.0
+		var bound_h = game.map.SCREEN_H if game else 720.0
+		position.x = clampf(position.x, 15, bound_w - 15)
+		position.y = clampf(position.y, 15, bound_h - 15)
 		# Dash phases THROUGH walls — no collision during dash
 		return
 
@@ -1559,9 +1559,9 @@ func spawn_impact_ring(offset: Vector2, radius: float, color: Color, width: floa
 		"width": width, "timer": 0.3, "max_timer": 0.3
 	})
 
-func spawn_melee_slash(offset: Vector2, color: Color, scale: float = 1.0):
+func spawn_melee_slash(offset: Vector2, color: Color, slash_scale: float = 1.0):
 	melee_slash_trails.append({
-		"offset": offset, "color": color, "scale": scale, "timer": 0.2
+		"offset": offset, "color": color, "scale": slash_scale, "timer": 0.2
 	})
 
 # --- Drawing (Brotato-style enhanced) ---
@@ -1619,7 +1619,7 @@ func _draw():
 
 	# Sprint speed lines
 	if is_sprinting and is_moving:
-		var sprint_dir = -Vector2.from_angle(facing_angle)
+		var _sprint_dir = -Vector2.from_angle(facing_angle)
 		for si in range(4):
 			var line_angle = facing_angle + PI + randf_range(-0.3, 0.3)
 			var line_start = Vector2.from_angle(line_angle) * 20.0
@@ -1638,14 +1638,14 @@ func _draw():
 	var shadow_depth_scale = 1.0
 	var shadow_offset_x = 0.0
 	var shadow_offset_y = 26.0
-	var shadow_alpha = 0.4
+	var _shadow_alpha = 0.4
 	if in_sideview_mode and game:
 		shadow_depth_scale = DepthPlanes.get_scale_for_y(position.y)
 		# Directional shadow: offset more for entities farther from camera
 		var y_factor = (position.y - 280.0) / 300.0
 		shadow_offset_x = y_factor * 6.0  # Shadow shifts right/left based on depth
 		shadow_offset_y = 26.0 + abs(y_factor) * 4.0  # Shadow moves down slightly
-		shadow_alpha = clampf(0.35 + y_factor * 0.1, 0.25, 0.45)  # Fade far shadows
+		_shadow_alpha = clampf(0.35 + y_factor * 0.1, 0.25, 0.45)  # Fade far shadows
 
 	var shadow_w = 90.0 * shadow_pulse * shadow_depth_scale
 	if has_dino_mount:
@@ -1675,7 +1675,7 @@ func _draw():
 
 		if is_dashing:
 			# Dash: extreme horizontal stretch, lean into direction
-			var dash_t = dash_timer / DASH_DURATION
+			var _dash_t = dash_timer / DASH_DURATION
 			offset_x = dash_direction.x * 8.0
 			offset_y = dash_direction.y * 8.0 - 6.0
 			tilt = dash_direction.angle() * 0.15
@@ -2348,7 +2348,7 @@ func _draw_shadow_soft(body_radius: float, depth_y: float, pulse: float = 1.0, o
 			points.append(Vector2(px, py))
 		draw_polygon(points, PackedColorArray([color]))
 
-func _draw_shadow_ellipse(rect: Rect2, color: Color):
+func _draw_shadow_ellipse(rect: Rect2, _color: Color):
 	"""Legacy shadow function - redirects to soft shadow for backward compatibility."""
 	var center_x = rect.position.x + rect.size.x / 2.0
 	var center_y = rect.position.y + rect.size.y / 2.0

@@ -532,6 +532,47 @@ func is_line_walkable(from_pos: Vector2, to_pos: Vector2, radius: float = 10.0) 
 			return false
 	return true
 
+func is_line_walkable_static(from_pos: Vector2, to_pos: Vector2, radius: float = 10.0) -> bool:
+	"""Line test against static world geometry. LinearMap has no dynamic blockers; same as is_line_walkable."""
+	return is_line_walkable(from_pos, to_pos, radius)
+
+func get_nearest_entrance(from_pos: Vector2) -> int:
+	"""FortMap compatibility: return nearest entrance index. Uses entrance_positions."""
+	if entrance_positions.is_empty():
+		return 0
+	var best = 0
+	var best_dist = INF
+	for i in range(entrance_positions.size()):
+		var d = from_pos.distance_to(entrance_positions[i])
+		if d < best_dist:
+			best_dist = d
+			best = i
+	return best
+
+func get_entrance_position(index: int) -> Vector2:
+	"""FortMap compatibility: return entrance position by index."""
+	if index >= 0 and index < entrance_positions.size():
+		return entrance_positions[index]
+	if entrance_positions.size() > 0:
+		return entrance_positions[0]
+	return Vector2(level_width * 0.5, level_height * 0.5)
+
+func get_barricade(_index: int):
+	"""FortMap compatibility: LinearMap has no barricades."""
+	return null
+
+func get_fort_center() -> Vector2:
+	"""FortMap compatibility: return level center."""
+	return Vector2(level_width * 0.5, level_height * 0.5)
+
+func get_random_spawn_point() -> Vector2:
+	"""FortMap compatibility: return random spawn in first zone or level center."""
+	var segs = level_config.get("segments", [])
+	for seg in segs:
+		for zone in seg.get("spawn_zones", []):
+			return get_random_spawn_in_zone(zone)
+	return Vector2(level_width * 0.5, level_height * 0.5)
+
 func get_nearest_barricade_in_range(_pos: Vector2, _range_dist: float):
 	return null
 
@@ -540,6 +581,10 @@ func get_nearest_door_in_range(_pos: Vector2, _range_dist: float):
 
 func get_nearest_closed_door(_pos: Vector2, _range_dist: float):
 	"""Returns the nearest closed (blocking) door within range. LinearMap has no doors; stub for compatibility."""
+	return null
+
+func get_blocking_door_on_line(_from_pos: Vector2, _to_pos: Vector2, _radius: float = 10.0):
+	"""Returns first closed door blocking travel along a segment. LinearMap has no doors; stub for compatibility."""
 	return null
 
 func get_outside_ally_position(player_index: int) -> Vector2:
@@ -808,7 +853,7 @@ func _draw():
 		# Instead, use simple depth-based darkening on floors
 		for rect in floor_rects:
 			# Simple top-to-bottom gradient for depth
-			var gradient_rects = 4  # Only 4 bands instead of 256 quads
+			var gradient_rects = 4
 			for i in range(gradient_rects):
 				var band_h = rect.size.y / gradient_rects
 				var band_y = rect.position.y + i * band_h

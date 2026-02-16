@@ -474,6 +474,8 @@ func _process_wave(delta):
 	_apply_player_tether(delta)
 	wave_director.update(delta)
 
+	# Reset pathfinding budget each frame (limits A* runs to prevent 1 FPS freeze)
+	EnemyEntity._pathfind_budget = 3
 	for enemy in enemy_container.get_children():
 		if enemy.has_meta("emp_stun_timer"):
 			var stun_left = float(enemy.get_meta("emp_stun_timer")) - delta

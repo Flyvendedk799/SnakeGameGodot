@@ -23,6 +23,7 @@ const THEMES = {
 # Pre-generated cloud positions (deterministic per setup)
 var cloud_data: Array = []
 var star_data: Array = []
+var _parallax_frame: int = 0
 
 func setup(game_ref, theme: String, width: float, height: float):
 	game = game_ref
@@ -37,7 +38,7 @@ func _generate_clouds():
 	cloud_data.clear()
 	var rng = RandomNumberGenerator.new()
 	rng.seed = hash(theme_name) + int(level_width)
-	var count = 16 + int(level_width / 250)  # Denser clouds for richer atmosphere
+	var count = 16 + int(level_width / 250)
 	for i in range(count):
 		cloud_data.append({
 			"x": rng.randf_range(-200, level_width + 200),
@@ -67,7 +68,10 @@ func _generate_stars():
 func _process(delta):
 	if game and visible:
 		time += delta
-		queue_redraw()
+		_parallax_frame += 1
+		# Throttle redraw to every 2nd frame to reduce cost during jumps/scrolling
+		if _parallax_frame % 2 == 0:
+			queue_redraw()
 
 func _draw():
 	if game == null or game.game_camera == null:

@@ -6,6 +6,8 @@ var state: EnemyState = EnemyState.APPROACHING
 
 # Sprite texture cache (shared across all instances)
 static var _tex_cache: Dictionary = {}
+# Pathfinding budget: only N enemies can run A* per frame (prevents 1 FPS when many enemies)
+static var _pathfind_budget: int = 3
 
 static func _get_texture(sprite_name: String) -> Texture2D:
 	if not _tex_cache.has(sprite_name):
@@ -253,8 +255,14 @@ func _state_chasing(delta, game):
 			stuck_timer = 0.0
 
 func _resolve_chase_point(target_pos: Vector2, game) -> Vector2:
+	# Main Game (LinearMap): side-scroll levels - skip A*, chase directly (huge perf win)
+	if game.map.has_method("resolve_sideview_collision"):
+		return target_pos
 	if nav_repath_timer <= 0 or nav_path.is_empty():
-		_build_nav_path(target_pos, game)
+		# Only N enemies can pathfind per frame to prevent freeze (Karen Defense fort)
+		if _pathfind_budget > 0:
+			_pathfind_budget -= 1
+			_build_nav_path(target_pos, game)
 		nav_repath_timer = 0.5
 	if not nav_path.is_empty():
 		if nav_path_index < nav_path.size() and position.distance_to(nav_path[nav_path_index]) < 24.0:

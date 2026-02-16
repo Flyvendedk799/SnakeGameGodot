@@ -18,10 +18,11 @@ config/name="Snake Game"
 config/version="1.0.0"
 run/main_scene="res://launcher.tscn"
 config/features=PackedStringArray("4.6")
-run/max_fps=120
+run/max_fps=60
 
 [autoload]
 
+DebugLogger="*res://debug_logger.gd"
 MainGameManager="*res://main_game/autoload/main_game_manager.gd"
 
 [display]
