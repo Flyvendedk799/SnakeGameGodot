@@ -101,11 +101,11 @@ func _check_player_melee_hits():
 			var hitstop_duration = combo_cfg.get("hitstop", 0.02)  # Default to 0.02 if not present
 			game.start_hitstop(hitstop_duration, 1.0)  # Consistent intensity for smooth gameplay
 
-			# AAA Upgrade: Impact ring and camera pulse for combo finisher (hit 3)
-			if combo_idx == 2:  # Hit 3 - Heavy spin
-				p.spawn_impact_ring(Vector2.ZERO, 55.0, Color(1.0, 0.3, 0.1, 0.9), 4.0)
+			# CARTOON: Big combat zoom on combo finisher
+			if combo_idx == 2:
+				p.spawn_impact_ring(Vector2.ZERO, 65.0, Color(1.0, 0.3, 0.1, 0.95), 5.0)
 				if game.has_method("trigger_camera_zoom_pulse"):
-					game.trigger_camera_zoom_pulse(1.5)  # Strong zoom in for finisher
+					game.trigger_camera_zoom_pulse(2.8)
 
 			# Lifesteal on melee
 			if p.lifesteal > 0 and p.current_hp < p.max_hp:

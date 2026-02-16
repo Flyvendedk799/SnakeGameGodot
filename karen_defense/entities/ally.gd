@@ -49,6 +49,10 @@ var squash_velocity: float = 0.0
 var trail_history: Array = []
 var trail_timer: float = 0.0
 
+# AAA Visual Overhaul: Shader-capable rendering (Main Game only)
+var character_visual: CharacterVisual = null
+var _use_shader_visual: bool = false
+
 # AAA Animation upgrade - spawn animation
 var spawn_timer: float = 0.0
 var spawn_complete: bool = false
@@ -81,6 +85,26 @@ func initialize(type: String, stats: Dictionary):
 	if not wep.is_empty():
 		weapon_texture = load("res://assets/%s.png" % wep.sprite)
 		weapon_config = wep
+	# AAA Visual Overhaul: Setup shader visual for Main Game
+	_setup_ally_shader_visual()
+
+func _setup_ally_shader_visual():
+	"""AAA Visual Overhaul: Create CharacterVisual for shader rendering in Main Game."""
+	var scene = Engine.get_main_loop().current_scene if Engine.get_main_loop() else null
+	if scene and scene.get("is_sideview_game") and scene.is_sideview_game and sprite_texture:
+		_use_shader_visual = true
+		character_visual = CharacterVisual.new()
+		character_visual.name = "Visual"
+		add_child(character_visual)
+		var theme = "grass"
+		if scene.get("map") and scene.map.get("level_config"):
+			theme = scene.map.level_config.get("theme", "grass")
+		character_visual.setup(sprite_texture, {
+			"outline_width": 1.5,
+			"outline_color": CartoonPalette.get_outline_color(theme),
+			"tint": color,
+		})
+		character_visual.set_theme_lighting(theme)
 
 func update_ally(delta: float, game):
 	if current_hp <= 0:
@@ -494,14 +518,29 @@ func _draw_sprite(flash: bool, s: float):
 		)
 		draw_texture(sprite_texture, -sprite_texture.get_size() / 2.0, Color(color.r, color.g, color.b, trail.alpha))
 
-	# Draw sprite outline (slightly larger, dark)
-	var outline_bump = 1.06
+	# CARTOON: Bold outline + rim lighting
+	var outline_scale = 1.12
 	draw_set_transform(
 		Vector2(offset_x, sprite_y),
 		tilt,
-		Vector2(scale_x * flip_sign * outline_bump, scale_y * outline_bump)
+		Vector2(scale_x * flip_sign * outline_scale, scale_y * outline_scale)
 	)
-	draw_texture(sprite_texture, -sprite_texture.get_size() / 2.0, Color(0, 0, 0, 0.5))
+	draw_texture(sprite_texture, -sprite_texture.get_size() / 2.0, Color(0.08, 0.05, 0.15, 0.6))
+	var inner_outline = 1.05
+	draw_set_transform(
+		Vector2(offset_x, sprite_y),
+		tilt,
+		Vector2(scale_x * flip_sign * inner_outline, scale_y * inner_outline)
+	)
+	draw_texture(sprite_texture, -sprite_texture.get_size() / 2.0, Color(0.02, 0.01, 0.08, 0.9))
+	var rim_offset = Vector2(-flip_sign * 2.5, -3.0)
+	var rim_scale = 1.04
+	draw_set_transform(
+		Vector2(offset_x + rim_offset.x, sprite_y + rim_offset.y),
+		tilt,
+		Vector2(scale_x * flip_sign * rim_scale, scale_y * rim_scale)
+	)
+	draw_texture(sprite_texture, -sprite_texture.get_size() / 2.0, Color(1.0, 0.95, 0.9, 0.4))
 
 	# Draw main sprite
 	var sprite_xform = Transform2D(tilt, Vector2(scale_x * flip_sign, scale_y), 0.0, Vector2(offset_x, sprite_y))
@@ -557,28 +596,32 @@ func _draw_diamond(flash: bool, s: float):
 			draw_line(Vector2(-2, -1), Vector2(2, -1), Color.WHITE, 1.0)
 
 func _draw_shadow_soft(body_radius: float, depth_y: float, pulse: float = 1.0, offset_x: float = 0.0, offset_y: float = 26.0):
-	"""AAA Upgrade: 5-layer gradient shadow with depth-based scaling for soft, natural falloff."""
+	"""CARTOON: Strong contact shadow."""
 	var shadow_alpha = DepthPlanes.get_shadow_alpha_for_y(depth_y)
 	var shadow_scale = DepthPlanes.get_shadow_scale_for_y(depth_y)
 	var shadow_offset = Vector2(offset_x, offset_y)
-
-	# Multi-layer shadow for soft falloff (5 layers)
-	var layers = 5
-	for i in range(layers):
-		var layer_t = float(i) / float(layers)
-		var radius_x = body_radius * shadow_scale * pulse * (0.6 + layer_t * 0.4)
-		var radius_y = radius_x * 0.5  # Flattened ellipse
-		var alpha = shadow_alpha * (1.0 - layer_t * 0.7)
-		var color = Color(0, 0, 0, alpha / float(layers))
-
-		# Ellipse approximation (12-point polygon for performance)
+	var core_radius_x = body_radius * shadow_scale * pulse * 0.85
+	var core_radius_y = core_radius_x * 0.4
+	var contact_alpha = minf(0.85, shadow_alpha * 1.4)
+	var core_points = PackedVector2Array()
+	for j in range(16):
+		var angle = float(j) / 16.0 * TAU
+		var px = shadow_offset.x + cos(angle) * core_radius_x
+		var py = shadow_offset.y + sin(angle) * core_radius_y
+		core_points.append(Vector2(px, py))
+	draw_polygon(core_points, PackedColorArray([Color(0.05, 0.05, 0.12, contact_alpha)]))
+	for i in range(2):
+		var layer_t = float(i + 1) / 3.0
+		var radius_x = core_radius_x * (1.0 + layer_t * 0.5)
+		var radius_y = core_radius_y * (1.0 + layer_t * 0.5)
+		var alpha = shadow_alpha * 0.4 * (1.0 - layer_t)
 		var points = PackedVector2Array()
 		for j in range(12):
 			var angle = float(j) / 12.0 * TAU
 			var px = shadow_offset.x + cos(angle) * radius_x
 			var py = shadow_offset.y + sin(angle) * radius_y
 			points.append(Vector2(px, py))
-		draw_polygon(points, PackedColorArray([color]))
+		draw_polygon(points, PackedColorArray([Color(0.08, 0.06, 0.15, alpha)]))
 
 func _draw_shadow_ellipse(rect: Rect2, col: Color):
 	"""Legacy shadow function - redirects to soft shadow for backward compatibility."""

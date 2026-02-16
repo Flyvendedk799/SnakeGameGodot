@@ -42,6 +42,7 @@ var game_over_screen: GameOverScreen
 
 var sfx: KarenSfxPlayer
 var fx_manager: FXManager  # AAA Upgrade: Unified FX coordinator
+var post_process: PostProcessSimple = null  # AAA Visual Overhaul: GPU shader pipeline
 var particles: ParticleSystem
 var game_camera: Camera2D = null
 var camera_base_zoom: float = 1.0
@@ -73,8 +74,8 @@ var camera_tilt: float = 0.0  # Dynamic rotation based on movement
 var camera_tilt_velocity: float = 0.0
 var camera_combat_offset: Vector2 = Vector2.ZERO  # Frame enemies during combat
 var camera_vertical_offset: float = 0.0  # Enhanced vertical positioning
-const CAMERA_TILT_MAX: float = 0.08  # ~4.5 degrees max tilt
-const CAMERA_LOOKAHEAD_MAX: float = 180.0  # More aggressive lookahead
+const CAMERA_TILT_MAX: float = 0.22  # CARTOON: Noticeable tilt during sprint (~12.5 degrees)
+const CAMERA_LOOKAHEAD_MAX: float = 220.0
 const CAMERA_DEADZONE_Y: float = 0.0
 var _camera_target_smooth: Vector2 = Vector2.ZERO
 var _camera_smooth_ready: bool = false
@@ -98,6 +99,16 @@ var vignette_intensity: float = 0.0
 var speed_line_intensity: float = 0.0
 var level_intro_timer: float = 2.0
 const REDRAW_INTERVAL: float = 1.0 / 60.0
+
+# AAA Visual Overhaul: Establishing shot camera
+var establishing_shot_active: bool = false
+var establishing_shot_timer: float = 0.0
+var establishing_shot_from: Vector2 = Vector2.ZERO
+var establishing_shot_to: Vector2 = Vector2.ZERO
+const ESTABLISHING_SHOT_DURATION: float = 1.2
+# Camera overshoot spring
+var camera_overshoot: Vector2 = Vector2.ZERO
+var camera_overshoot_velocity: Vector2 = Vector2.ZERO
 
 var current_level_id: int = 1
 var current_map_id: int = 1  # Alias for game_over_screen compatibility
@@ -247,6 +258,12 @@ func _build_scene_tree():
 	fx_draw_node.game = self
 	fx_layer.add_child(fx_draw_node)
 
+	# AAA Visual Overhaul: GPU post-processing shader pipeline
+	post_process = PostProcessSimple.new()
+	post_process.name = "PostProcess"
+	add_child(post_process)
+	post_process.setup(self)
+
 	# ParticleSystem is RefCounted, not Node - used via particles.update() and particles.draw()
 
 func _setup_systems():
@@ -286,6 +303,9 @@ func _setup_systems():
 	if parallax_backdrop:
 		var theme = map.level_config.get("theme", "grass")
 		parallax_backdrop.setup(self, theme, map.level_width, map.level_height)
+	# AAA Visual Overhaul: Set post-process theme
+	if post_process:
+		post_process.set_theme(map.level_config.get("theme", "grass"))
 	economy.configure_for_map(map.level_config)
 	game_camera.position = map.get_player_anchor()
 	spawn_director.setup(self)
@@ -306,6 +326,9 @@ func _setup_systems():
 	player_node.position = map.get_spawn_position()
 	run_summary_line = get_run_summary_line()
 	run_summary_timer = 11.0
+
+	# AAA Visual Overhaul: Establishing shot - brief pan from spawn area to player
+	_start_establishing_shot()
 
 
 func _apply_pending_run_modifiers():
@@ -440,9 +463,19 @@ func _process(delta):
 		level_intro_timer -= delta
 	if damage_flash_timer > 0:
 		damage_flash_timer -= delta
+	# AAA Visual Overhaul: Update establishing shot
+	if establishing_shot_active:
+		establishing_shot_timer -= delta
+		if establishing_shot_timer <= 0:
+			establishing_shot_active = false
+		else:
+			var t = 1.0 - (establishing_shot_timer / ESTABLISHING_SHOT_DURATION)
+			var ease_t = ease_out_expo(t)
+			game_camera.position = establishing_shot_from.lerp(establishing_shot_to, ease_t)
 	if state == GameState.LEVEL_ACTIVE:
 		run_summary_timer = maxf(0.0, run_summary_timer - delta)
-		_update_linear_camera(delta)
+		if not establishing_shot_active:
+			_update_linear_camera(delta)
 		_debug_camera_timer += delta
 		if _debug_camera_timer >= 5.0:
 			_debug_camera_timer = 0.0
@@ -611,18 +644,25 @@ func _update_linear_camera(delta: float):
 
 	var effective_target = _camera_target_smooth
 
-	# AAA Upgrade: Action-based dynamic zoom
+	# AAA Visual Overhaul: Aggressive action-based dynamic zoom
 	var action_zoom = 1.0
 	if p1 and not p1.is_dead:
 		# Zoom out when sprinting for speed emphasis
 		if p1.is_sprinting and absf(p1.velocity.x) > 200:
 			action_zoom += 0.08
-		# Zoom in slightly during combat for intensity
+		# Zoom in during combat - MORE aggressive on combo finisher (hit 3)
 		elif p1.is_attacking_melee:
-			action_zoom -= 0.03
+			var combo_idx = p1.combo_index if p1.get("combo_index") != null else 0
+			if combo_idx == 2:  # Finisher hit
+				action_zoom -= 0.08  # Aggressive zoom-in
+			else:
+				action_zoom -= 0.03
 		# Zoom out during ground pound fall
 		elif p1.get("is_ground_pounding") and p1.is_ground_pounding:
 			action_zoom += 0.12
+		# Zoom out slightly when airborne for spatial awareness
+		elif not p1.is_on_ground and absf(p1.velocity.y) > 200:
+			action_zoom += 0.04
 
 	# Apply zoom pulse and action zoom to zoom target
 	var pulse_zoom = Vector2(1.0 + camera_zoom_pulse, 1.0 + camera_zoom_pulse)
@@ -643,7 +683,18 @@ func _update_linear_camera(delta: float):
 	var ease_y = ease_out_expo(safe_delta * follow_speed * y_speed_mult)
 	var new_x = lerpf(game_camera.position.x, effective_target.x, ease_x)
 	var new_y = lerpf(game_camera.position.y, effective_target.y, ease_y)
-	game_camera.position = Vector2(new_x, new_y)
+
+	# AAA Visual Overhaul: Camera overshoot spring (continues past target, springs back)
+	var cam_velocity = Vector2(new_x - game_camera.position.x, new_y - game_camera.position.y)
+	var overshoot_spring = -camera_overshoot * 30.0
+	camera_overshoot_velocity += overshoot_spring * delta
+	camera_overshoot_velocity *= exp(-12.0 * delta)
+	camera_overshoot_velocity += cam_velocity * 0.15  # Feed camera movement into overshoot
+	camera_overshoot += camera_overshoot_velocity * delta
+	if camera_overshoot.length() < 0.5:
+		camera_overshoot = Vector2.ZERO
+
+	game_camera.position = Vector2(new_x, new_y) + camera_overshoot
 
 	# Store for debug snapshot
 	_debug_cam_target = target
@@ -654,16 +705,14 @@ func _update_linear_camera(delta: float):
 	var zoom_ease = ease_out_spring(safe_delta * 5.0)
 	game_camera.zoom = game_camera.zoom.lerp(zoom_target, zoom_ease)
 
-	# AAA Upgrade: Dynamic camera tilt based on velocity for cinematic feel
+	# CARTOON: Exaggerated camera tilt - kicks in at lower speed, stronger during dash
 	var target_tilt = 0.0
 	if p1 and not p1.is_dead:
-		# Tilt camera in direction of fast movement (like car racing games)
 		var vel_x = p1.velocity.x
-		if absf(vel_x) > 150:
-			target_tilt = -sign(vel_x) * clampf(absf(vel_x) / 600.0, 0.0, 1.0) * CAMERA_TILT_MAX
-		# Extra tilt during dash for emphasis
+		if absf(vel_x) > 100:
+			target_tilt = -sign(vel_x) * clampf((absf(vel_x) - 100) / 450.0, 0.0, 1.0) * CAMERA_TILT_MAX
 		if p1.is_dashing:
-			target_tilt *= 1.8
+			target_tilt *= 2.2
 	# Spring physics for smooth tilt
 	var tilt_force = (target_tilt - camera_tilt) * 25.0
 	camera_tilt_velocity += tilt_force * delta
@@ -747,15 +796,20 @@ func start_hitstop(duration: float, intensity: float = 1.0):
 	var timescale = lerpf(0.25, 0.05, clampf(intensity - 0.5, 0.0, 1.5) / 1.5)
 	Engine.time_scale = timescale
 
+	# AAA Visual Overhaul: Heavy hits trigger screen distortion + bloom
+	if intensity > 1.0 and post_process:
+		post_process.trigger_impact_distortion(Vector2(0.5, 0.5), (intensity - 1.0) * 0.4)
+		post_process.trigger_bloom_boost((intensity - 1.0) * 0.3)
+
 func trigger_bloom(intensity: float = 1.0):
 	"""AAA Upgrade: Trigger bloom glow effect."""
 	if fx_draw_node:
 		fx_draw_node.bloom_intensity = intensity
 
 func trigger_camera_zoom_pulse(strength: float):
-	"""AAA Upgrade: Trigger camera FOV pulse. Negative = zoom out, positive = zoom in."""
-	camera_zoom_pulse += strength * 0.01  # Scale to -0.02 to +0.02 range
-	camera_zoom_pulse = clampf(camera_zoom_pulse, -0.04, 0.04)
+	"""CARTOON: Exaggerated camera pulse - clearly noticeable."""
+	camera_zoom_pulse += strength * 0.025
+	camera_zoom_pulse = clampf(camera_zoom_pulse, -0.08, 0.08)
 
 func spawn_damage_number(pos: Vector2, text: String, color: Color, use_bounce: bool = false):
 	"""AAA Upgrade: Enhanced with optional spring bounce physics."""
@@ -809,6 +863,33 @@ func trigger_landing_impact():
 
 func start_chromatic(intensity: float):
 	chromatic_intensity = maxf(chromatic_intensity, intensity)
+	# AAA Visual Overhaul: Route to GPU shader when available
+	if post_process:
+		post_process.trigger_chromatic(intensity * 0.003)
+
+func trigger_impact_distortion(world_pos: Vector2, strength: float = 0.5):
+	"""AAA Visual Overhaul: Screen warp from impact point. Uses GPU shader."""
+	if post_process and game_camera:
+		var vp_size = get_viewport_rect().size
+		var screen_pos = (world_pos - game_camera.position + vp_size * 0.5) / vp_size
+		screen_pos = screen_pos.clamp(Vector2.ZERO, Vector2.ONE)
+		post_process.trigger_impact_distortion(screen_pos, strength)
+
+func trigger_bloom_boost(intensity: float = 0.5):
+	"""AAA Visual Overhaul: GPU bloom boost for emphasis."""
+	if post_process:
+		post_process.trigger_bloom_boost(intensity)
+
+func _start_establishing_shot():
+	"""AAA Visual Overhaul: Brief camera pan from offset to player on level load."""
+	if not player_node or not game_camera:
+		return
+	establishing_shot_active = true
+	establishing_shot_timer = ESTABLISHING_SHOT_DURATION
+	establishing_shot_to = player_node.position
+	# Start camera offset to the right (show ahead of player)
+	establishing_shot_from = player_node.position + Vector2(300, -80)
+	game_camera.position = establishing_shot_from
 
 func _update_shake(delta):
 	if shake_timer > 0:

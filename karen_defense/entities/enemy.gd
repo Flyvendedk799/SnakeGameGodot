@@ -68,6 +68,10 @@ var trail_timer: float = 0.0
 var spawn_timer: float = 0.0
 var spawn_complete: bool = false
 
+# AAA Visual Overhaul: Shader-capable rendering (Main Game only)
+var character_visual: CharacterVisual = null
+var _use_shader_visual: bool = false
+
 func initialize(type: String, stats: Dictionary):
 	enemy_type = type
 	max_hp = stats.hp
@@ -91,6 +95,8 @@ func initialize(type: String, stats: Dictionary):
 	label_short = stats.get("short", "K")
 	sprite_texture = _get_texture(stats.get("sprite", "enemya"))
 	anim_time = randf() * 10.0
+	# AAA Visual Overhaul: Setup shader visual for Main Game
+	_setup_shader_visual()
 	if Engine.get_main_loop() and Engine.get_main_loop().current_scene and Engine.get_main_loop().current_scene.has_method("get_enemy_hp_multiplier"):
 		var game_scene = Engine.get_main_loop().current_scene
 		var hp_mult = game_scene.get_enemy_hp_multiplier()
@@ -511,6 +517,9 @@ func die(game, drop_loot: bool = true):
 		game.start_chromatic(6.0)
 	state = EnemyState.DYING
 	dying_timer = 0.3
+	# AAA Visual Overhaul: Start dissolve shader on death
+	if _use_shader_visual and character_visual:
+		character_visual.start_dissolve(0.3, color)
 
 # --- Visual juice helpers ---
 
@@ -535,6 +544,28 @@ func _update_trail(delta: float):
 			trail_history.remove_at(i)
 		i -= 1
 
+func _setup_shader_visual():
+	"""AAA Visual Overhaul: Create CharacterVisual for shader rendering in Main Game."""
+	# Check if we're in sideview Main Game
+	var scene = Engine.get_main_loop().current_scene if Engine.get_main_loop() else null
+	if scene and scene.get("is_sideview_game") and scene.is_sideview_game and sprite_texture:
+		_use_shader_visual = true
+		character_visual = CharacterVisual.new()
+		character_visual.name = "Visual"
+		add_child(character_visual)
+		var theme = "grass"
+		if scene.get("map") and scene.map.get("level_config"):
+			theme = scene.map.level_config.get("theme", "grass")
+		character_visual.setup(sprite_texture, {
+			"outline_width": 1.8 if is_boss else 1.5,
+			"outline_color": CartoonPalette.get_outline_color(theme),
+			"tint": color,
+		})
+		character_visual.set_theme_lighting(theme)
+		# Dissolve color matches enemy color
+		if character_visual.dissolve_material:
+			character_visual.dissolve_material.set_shader_parameter("dissolve_color", color)
+
 # --- Drawing (Brotato-style enhanced) ---
 
 func _draw():
@@ -544,6 +575,13 @@ func _draw():
 		var vis = game.get_visible_world_rect()
 		if not vis.has_point(position):
 			return  # Fully cull - nothing to draw when off-screen
+
+	# AAA Visual Overhaul: Update shader visual if active
+	if _use_shader_visual and character_visual:
+		_update_shader_visual()
+		# EARLY RETURN - CharacterVisual handles all rendering
+		return
+
 	var dying_scale = 1.0
 	if state == EnemyState.DYING:
 		var t = dying_timer / 0.3
@@ -650,14 +688,30 @@ func _draw():
 				)
 				draw_texture(sprite_texture, -tex_size / 2.0, Color(color.r, color.g, color.b, trail.alpha))
 
-		# Draw sprite outline (slightly larger, dark)
-		var outline_bump = 1.06
+		# CARTOON: Bold outline + rim lighting (match player style)
+		var outline_scale = 1.12
 		draw_set_transform(
 			Vector2(offset_x * dying_scale, sprite_y * dying_scale),
 			tilt,
-			Vector2(scale_x * flip_sign * dying_scale * outline_bump, scale_y * dying_scale * outline_bump)
+			Vector2(scale_x * flip_sign * dying_scale * outline_scale, scale_y * dying_scale * outline_scale)
 		)
-		draw_texture(sprite_texture, -tex_size / 2.0, Color(0, 0, 0, 0.5))
+		draw_texture(sprite_texture, -tex_size / 2.0, Color(0.08, 0.05, 0.15, 0.6))
+		var inner_outline = 1.05
+		draw_set_transform(
+			Vector2(offset_x * dying_scale, sprite_y * dying_scale),
+			tilt,
+			Vector2(scale_x * flip_sign * dying_scale * inner_outline, scale_y * dying_scale * inner_outline)
+		)
+		draw_texture(sprite_texture, -tex_size / 2.0, Color(0.02, 0.01, 0.08, 0.9))
+		# Rim light
+		var rim_offset = Vector2(-flip_sign * 2.5, -3.0)
+		var rim_scale = 1.04
+		draw_set_transform(
+			Vector2((offset_x + rim_offset.x) * dying_scale, (sprite_y + rim_offset.y) * dying_scale),
+			tilt,
+			Vector2(scale_x * flip_sign * dying_scale * rim_scale, scale_y * dying_scale * rim_scale)
+		)
+		draw_texture(sprite_texture, -tex_size / 2.0, Color(1.0, 0.95, 0.9, 0.4))
 
 		# Draw main sprite
 		draw_set_transform(
@@ -710,29 +764,75 @@ func _draw():
 	if state == EnemyState.DYING:
 		draw_set_transform(Vector2.ZERO, 0, Vector2.ONE)
 
+func _update_shader_visual():
+	"""AAA Visual Overhaul: Update CharacterVisual transforms and effects."""
+	if not character_visual:
+		return
+
+	var delta = get_process_delta_time()
+	character_visual.update_visual(delta)
+
+	# Flash on hit
+	if hit_flash_timer > 0 and not character_visual.is_dissolving:
+		if character_visual.flash_timer <= 0:
+			character_visual.trigger_flash(0.1)
+
+	# Calculate visual scale (same logic as procedural _draw)
+	var s = entity_size
+	var target_h = s * 4.5
+	var tex_size = sprite_texture.get_size() if sprite_texture else Vector2(64, 64)
+	var base_scale = target_h / tex_size.y
+	var scale_x = base_scale
+	var scale_y = base_scale
+
+	# Apply squash
+	scale_y *= squash_factor
+	scale_x *= (2.0 - squash_factor)
+
+	# Depth scaling
+	if game and game.is_sideview_game:
+		var depth_scale = DepthPlanes.get_scale_for_y(position.y)
+		var y_factor = clampf((position.y - 280.0) / 300.0, -0.3, 0.3)
+		var perspective_squash = 1.0 - abs(y_factor) * 0.08
+		scale_x *= depth_scale
+		scale_y *= depth_scale * perspective_squash
+
+	var flip_h = last_dir.x > 0
+	var flip_sign = -1.0 if flip_h else 1.0
+
+	character_visual.update_transform(flip_h, Vector2(scale_x * flip_sign, scale_y))
+
+	# Position the visual at the sprite offset
+	var sprite_y = -target_h * 0.15 + knockback_offset.y
+	character_visual.position = Vector2(knockback_offset.x, sprite_y)
+
 func _draw_shadow_soft(body_radius: float, depth_y: float, pulse: float = 1.0, offset_x: float = 0.0, offset_y: float = 26.0):
-	"""AAA Upgrade: 5-layer gradient shadow with depth-based scaling for soft, natural falloff."""
+	"""CARTOON: Strong contact shadow for weight and grounding."""
 	var shadow_alpha = DepthPlanes.get_shadow_alpha_for_y(depth_y)
 	var shadow_scale = DepthPlanes.get_shadow_scale_for_y(depth_y)
 	var shadow_offset = Vector2(offset_x, offset_y)
-
-	# Multi-layer shadow for soft falloff (5 layers)
-	var layers = 5
-	for i in range(layers):
-		var layer_t = float(i) / float(layers)
-		var radius_x = body_radius * shadow_scale * pulse * (0.6 + layer_t * 0.4)
-		var radius_y = radius_x * 0.5  # Flattened ellipse
-		var alpha = shadow_alpha * (1.0 - layer_t * 0.7)
-		var color = Color(0, 0, 0, alpha / float(layers))
-
-		# Ellipse approximation (12-point polygon for performance)
+	var core_radius_x = body_radius * shadow_scale * pulse * 0.85
+	var core_radius_y = core_radius_x * 0.4
+	var contact_alpha = minf(0.85, shadow_alpha * 1.4)
+	var core_points = PackedVector2Array()
+	for j in range(16):
+		var angle = float(j) / 16.0 * TAU
+		var px = shadow_offset.x + cos(angle) * core_radius_x
+		var py = shadow_offset.y + sin(angle) * core_radius_y
+		core_points.append(Vector2(px, py))
+	draw_polygon(core_points, PackedColorArray([Color(0.05, 0.05, 0.12, contact_alpha)]))
+	for i in range(2):
+		var layer_t = float(i + 1) / 3.0
+		var radius_x = core_radius_x * (1.0 + layer_t * 0.5)
+		var radius_y = core_radius_y * (1.0 + layer_t * 0.5)
+		var alpha = shadow_alpha * 0.4 * (1.0 - layer_t)
 		var points = PackedVector2Array()
 		for j in range(12):
 			var angle = float(j) / 12.0 * TAU
 			var px = shadow_offset.x + cos(angle) * radius_x
 			var py = shadow_offset.y + sin(angle) * radius_y
 			points.append(Vector2(px, py))
-		draw_polygon(points, PackedColorArray([color]))
+		draw_polygon(points, PackedColorArray([Color(0.08, 0.06, 0.15, alpha)]))
 
 func _draw_shadow_ellipse(rect: Rect2, col: Color):
 	"""Legacy shadow function - redirects to soft shadow for backward compatibility."""

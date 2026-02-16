@@ -5,4 +5,3 @@
 [node name="Player" type="Node2D" unique_id=1751412271]
 position = Vector2(478, 240)
 script = ExtResource("1_player")
-sprite_feet_padding = 250.0

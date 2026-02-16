@@ -133,13 +133,13 @@ func _draw():
 		draw_rect(Rect2(cx + w * 0.15, cy - h * 0.4, w * 0.5, h * 0.6), cloud_col)
 		draw_rect(Rect2(cx + w * 0.4, cy - h * 0.2, w * 0.4, h * 0.4), cloud_col)
 
-	# Distant mountains/silhouettes (parallax ~0.3 with depth adjustment)
+	# CARTOON: Distant layers lower contrast - playable area pops
 	var offset1 = -cam_pos * (0.3 * depth_factor)
 	var hill_h = level_height * 0.65
 	for i in range(int(level_width / 90) + 6):
 		var bx = offset1.x + i * 90.0 + fmod(cam_pos.x * 0.03, 90)
 		var by = level_height - hill_h * (0.35 + 0.25 * sin(i * 0.6))
-		var hill_col = pal[3].darkened(0.2)
+		var hill_col = pal[3].darkened(0.35)
 		draw_rect(Rect2(bx, by, 140, hill_h + 60), hill_col)
 		# Snow caps on summit theme
 		if theme_name == "summit" or theme_name == "ice":
@@ -153,12 +153,12 @@ func _draw():
 	# Atmospheric depth fog layer 1 (after distant mountains - 40% fog intensity)
 	_draw_depth_fog(offset0, 0.40)
 
-	# Mid-ground hills (parallax ~0.5)
+	# Mid-ground hills - slightly desaturated for depth
 	var offset2 = -cam_pos * (0.5 * depth_factor)
 	for i in range(int(level_width / 65) + 8):
 		var bx = offset2.x + i * 65.0 + fmod(cam_pos.x * 0.06, 65)
 		var by = level_height - hill_h * (0.32 + 0.28 * sin(i * 0.5 + 1))
-		draw_rect(Rect2(bx, by, 95, hill_h + 35), pal[4])
+		draw_rect(Rect2(bx, by, 95, hill_h + 35), pal[4].darkened(0.12))
 		# Tree silhouettes on grass theme
 		if theme_name == "grass" and i % 3 == 0:
 			var tree_h = 30.0 + sin(i * 2.1) * 10
@@ -173,12 +173,12 @@ func _draw():
 	# Atmospheric depth fog layer 2 (after mid-ground hills - 20% fog intensity)
 	_draw_depth_fog(offset0, 0.20)
 
-	# Near hills (parallax ~0.7) - more density
+	# Near hills - bridge to playable layer
 	var offset3 = -cam_pos * (0.7 * depth_factor)
 	for i in range(int(level_width / 35) + 14):
 		var bx = offset3.x + i * 35.0 + fmod(cam_pos.x * 0.1, 35)
 		var by = level_height - hill_h * (0.28 + 0.32 * sin(i * 0.4 + 2))
-		draw_rect(Rect2(bx, by, 55, hill_h + 25), pal[5])
+		draw_rect(Rect2(bx, by, 55, hill_h + 25), pal[5].darkened(0.05))
 	# Sky theme: floating island silhouettes
 	if theme_name == "sky":
 		var offset_isl = -cam_pos * 0.5

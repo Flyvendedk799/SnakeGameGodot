@@ -650,6 +650,13 @@ func _get_pit_rects() -> Array:
 			pits.append(Rect2(gap_start, pit_top, gap_end - gap_start, pit_bottom - pit_top))
 	return pits
 
+func is_position_over_pit(pos: Vector2) -> bool:
+	"""Check if a position is over a pit/chasm."""
+	for pit in _get_pit_rects():
+		if pit.has_point(pos):
+			return true
+	return false
+
 func _get_theme_fill_color(theme: String) -> Color:
 	"""AAA Upgrade: Theme-specific fill colors for terrain completion."""
 	match theme:
@@ -847,26 +854,45 @@ func _draw():
 			draw_rect(Rect2(px, py - 2, pw, 4), Color(0.95, 0.98, 1.0, 0.7))
 			draw_rect(Rect2(px + 4, py - 4, pw - 8, 3), Color(1, 1, 1, 0.5))
 
-	# Apply directional lighting (SIMPLIFIED - reduced resolution for performance)
+	# AAA Visual Overhaul Phase 7: Re-enable lighting with toon quantization
 	if lighting_system and terrain_normal:
-		# DISABLED: lighting overlay is too expensive
-		# Instead, use simple depth-based darkening on floors
+		# TOON-STEPPED LIGHTING: Quantize lighting to 3 discrete steps (shadow, mid, lit)
+		# Reduced resolution (sample every 40px) for performance
+		var sample_res = 40  # Sample grid resolution
 		for rect in floor_rects:
-			# Simple top-to-bottom gradient for depth
-			var gradient_rects = 4
-			for i in range(gradient_rects):
-				var band_h = rect.size.y / gradient_rects
-				var band_y = rect.position.y + i * band_h
-				var depth_factor = float(i) / gradient_rects
-				var darken_alpha = depth_factor * 0.08  # Subtle darkening
-				draw_rect(Rect2(rect.position.x, band_y, rect.size.x, band_h), Color(0, 0, 0, darken_alpha))
+			var cols = max(1, int(rect.size.x / sample_res))
+			var rows = max(1, int(rect.size.y / sample_res))
 
-		# Ambient occlusion at terrain corners (simplified)
+			for ry in range(rows):
+				for rx in range(cols):
+					var sample_x = rect.position.x + rx * sample_res
+					var sample_y = rect.position.y + ry * sample_res
+					var uv = Vector2((sample_x - rect.position.x) / rect.size.x, (sample_y - rect.position.y) / rect.size.y)
+
+					# Sample normal and calculate lighting
+					var normal = lighting_system.sample_normal_map(terrain_normal, uv)
+					var light_col = lighting_system.calculate_lighting(normal)
+
+					# AAA: TOON QUANTIZATION - posterize to 3 steps
+					var brightness = (light_col.r + light_col.g + light_col.b) / 3.0
+					var toon_step = 0.0
+					if brightness > 0.65:
+						toon_step = 0.0  # Lit - no darkening
+					elif brightness > 0.4:
+						toon_step = 0.15  # Mid - slight darkening
+					else:
+						toon_step = 0.3  # Shadow - noticeable darkening
+
+					# Apply toon-stepped lighting overlay
+					if toon_step > 0.01:
+						draw_rect(Rect2(sample_x, sample_y, sample_res, sample_res), Color(0, 0, 0, toon_step))
+
+		# Ambient occlusion at terrain corners (cel-shaded hard edges)
 		for rect in floor_rects:
 			if rect.size.y > 60:
-				# Just top corners
-				draw_rect(Rect2(rect.position.x, rect.position.y, 15, 15), Color(0, 0, 0, 0.12))
-				draw_rect(Rect2(rect.position.x + rect.size.x - 15, rect.position.y, 15, 15), Color(0, 0, 0, 0.12))
+				# Sharp AO corners (no gradient - cartoon style)
+				draw_rect(Rect2(rect.position.x, rect.position.y, 18, 18), Color(0, 0, 0, 0.2))
+				draw_rect(Rect2(rect.position.x + rect.size.x - 18, rect.position.y, 18, 18), Color(0, 0, 0, 0.2))
 
 	# Rocks/debris along floor bottoms
 	var rock_col = floor_edge.darkened(0.2)

@@ -66,6 +66,12 @@ func _trigger_checkpoint(index: int):
 	if game.spawn_director:
 		game.spawn_director.start_recovery_window(8.5 if full_heal_mode else 11.0)
 
+	# AAA Visual Overhaul: Checkpoint camera pull-back (subtle zoom-out for breathing room)
+	if game.has_method("trigger_camera_zoom_pulse"):
+		game.trigger_camera_zoom_pulse(3.0)  # Gentle zoom-out pulse
+	if game.post_process:
+		game.post_process.trigger_bloom_boost(0.2)  # Subtle glow on checkpoint reach
+
 	if not shop_open_from_checkpoint:
 		shop_open_from_checkpoint = true
 		game.shop_menu.show_menu(true)

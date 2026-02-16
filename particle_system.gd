@@ -33,7 +33,8 @@ func emit_directional(x: float, y: float, dir: Vector2, color: Color, count: int
 		particles.append(p)
 
 func emit_death_burst(x: float, y: float, color: Color):
-	_enforce_limit(25)
+	_enforce_limit(30)  # AAA Visual Overhaul: Increased for sub-emitters
+	# Primary burst particles
 	for i in range(16):
 		var angle = (float(i) / 16.0) * TAU + randf_range(-0.2, 0.2)
 		var spd = randf_range(80.0, 350.0)
@@ -44,6 +45,7 @@ func emit_death_burst(x: float, y: float, color: Color):
 		p.ground_y = y + randf_range(10, 30)
 		p.bounce_damping = randf_range(0.2, 0.5)
 		particles.append(p)
+	# Bright streaks
 	for i in range(6):
 		var angle = randf_range(-PI * 0.8, -PI * 0.2)
 		var spd = randf_range(200.0, 450.0)
@@ -52,9 +54,22 @@ func emit_death_burst(x: float, y: float, color: Color):
 		p.streak_length = 14.0
 		p.gravity_mult = 0.4
 		particles.append(p)
+	# Flash sparks
 	for i in range(3):
 		var p = Particle.new(x + randf_range(-5, 5), y + randf_range(-5, 5), randf_range(-30, 30), randf_range(-60, -20), Color.WHITE, 0.2, randi_range(5, 9))
 		p.gravity_mult = 0.0
+		particles.append(p)
+	# AAA Visual Overhaul: Sub-emitter smoke puffs (spawn after delay)
+	for i in range(5):
+		var smoke_col = Color(0.3, 0.3, 0.35, 0.6)
+		var p = Particle.new(x + randf_range(-8, 8), y + randf_range(-8, 8), randf_range(-25, 25), randf_range(-40, -10), smoke_col, 1.2, randi_range(4, 8))
+		p.shape = Particle.Shape.SMOKE_PUFF
+		p.gravity_mult = -0.15  # Rises slowly
+		p.spin_speed = randf_range(-2.0, 2.0)
+		p.is_sub_emitter = true
+		p.sub_emit_timer = randf_range(0.05, 0.15)  # Delayed spawn
+		p.scale_curve = 0.3  # Grows over lifetime
+		p.color_end = smoke_col.darkened(0.4)
 		particles.append(p)
 
 func emit_speed_streak(x: float, y: float, dir: Vector2, color: Color):

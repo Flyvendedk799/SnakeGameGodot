@@ -194,11 +194,12 @@ var combo_index: int = 0  # 0, 1, 2 for the 3-hit combo
 var combo_window: float = 0.0  # Time left to input next combo hit
 const COMBO_WINDOW_TIME = 0.6  # Slightly more forgiving combo window
 const COMBO_COUNT = 3
-# Per-combo-hit configs: {duration, damage_mult, arc_mult, lunge, squash}
+# Per-combo-hit configs: {duration, damage_mult, arc_mult, lunge, squash, hitstop}
+# CARTOON: Exaggerated anticipation, strike, and recovery for weight
 const COMBO_CONFIGS = [
-	{"duration": 0.13, "damage_mult": 1.0, "arc_mult": 1.0, "lunge": 20.0, "squash": 1.3, "hitstop": 0.0},   # Hit 1: Quick slash - no hitstop for smooth flow
-	{"duration": 0.16, "damage_mult": 1.35, "arc_mult": 0.85, "lunge": 26.0, "squash": 1.4, "hitstop": 0.015},   # Hit 2: Thrust - minimal hitstop
-	{"duration": 0.22, "damage_mult": 1.7, "arc_mult": 1.6, "lunge": 14.0, "squash": 0.55, "hitstop": 0.03},   # Hit 3: Heavy spin - light impact pause
+	{"duration": 0.14, "damage_mult": 1.0, "arc_mult": 1.0, "lunge": 28.0, "squash": 1.45, "hitstop": 0.008},
+	{"duration": 0.18, "damage_mult": 1.35, "arc_mult": 0.85, "lunge": 34.0, "squash": 1.55, "hitstop": 0.022},
+	{"duration": 0.26, "damage_mult": 1.7, "arc_mult": 1.6, "lunge": 20.0, "squash": 0.42, "hitstop": 0.065},
 ]
 
 # Input buffering for responsive combat
@@ -256,13 +257,20 @@ var using_mouse_aim: bool = false
 
 const BODY_RADIUS = 26.0
 
+# AAA Visual Overhaul: Shader-capable rendering (Main Game only)
+var character_visual: CharacterVisual = null
+var _use_shader_visual: bool = false
+# AAA Animation System
+var sprite_animator: SpriteAnimator = null
+var animation_frames_loaded: bool = false
+
 # Sprite
 var sprite_texture: Texture2D = null
 var hammer_texture: Texture2D = null
 var grapple_texture: Texture2D = null
 const SPRITE_HEIGHT = 150.0
 ## Pixels of empty space below the character's feet in the texture. Tune in Inspector if feet float.
-@export var sprite_feet_padding: float = 0.0
+@export_range(0.0, 800.0, 10.0) var sprite_feet_padding: float = 500.0  # Empty pixels below feet in sprite texture
 
 # Anchor points on player sprite (offset from texture center, in texture pixels)
 # X+ = character's right (facing right), Y+ = down
@@ -494,6 +502,11 @@ func use_potion(game):
 
 func update_player(delta: float, game):
 	in_sideview_mode = _is_main_game_sideview(game)
+	# AAA Visual Overhaul: Initialize shader visual on first update (game now available)
+	if in_sideview_mode and not _use_shader_visual and sprite_texture and character_visual == null:
+		_setup_player_shader_visual(game)
+	if _use_shader_visual and character_visual:
+		character_visual.update_visual(delta)
 	if has_dino_mount:
 		dino_anim_time += delta
 	_handle_grapple(delta, game)
@@ -717,7 +730,27 @@ func _handle_movement(delta, game):
 	if is_grappling:
 		return
 	if is_dashing:
-		position += dash_direction * DASH_SPEED * delta
+		# Calculate new position AND update velocity for animation system
+		var dash_velocity = dash_direction * DASH_SPEED
+		velocity = dash_velocity  # CRITICAL: Update velocity so SpriteAnimator can detect dash speed
+		var new_pos = position + dash_velocity * delta
+
+		# Prevent dashing into pits
+		if game and game.map and game.map.has_method("is_position_over_pit"):
+			if not game.map.is_position_over_pit(new_pos):
+				position = new_pos
+			else:
+				# Hit a pit - stop dash
+				is_dashing = false
+				dash_timer = 0
+				velocity = Vector2.ZERO
+		else:
+			position = new_pos
+
+		# Apply collision resolution (prevent phasing through walls/floors)
+		if game and game.map:
+			position = game.map.resolve_collision(position, BODY_RADIUS)
+
 		# Add dash trail ghost
 		if dash_trail.size() == 0 or position.distance_to(dash_trail[-1].pos) > 8.0:
 			dash_trail.append({"pos": position, "alpha": 0.5, "angle": facing_angle})
@@ -725,7 +758,7 @@ func _handle_movement(delta, game):
 		var bound_h = game.map.SCREEN_H if game else 720.0
 		position.x = clampf(position.x, 15, bound_w - 15)
 		position.y = clampf(position.y, 15, bound_h - 15)
-		# Dash phases THROUGH walls — no collision during dash
+		# Dash can phase through enemies but not terrain
 		return
 
 	var input_dir = Vector2.ZERO
@@ -756,6 +789,121 @@ func _handle_movement(delta, game):
 	# Collide with walls and intact barricades
 	position = game.map.resolve_collision(position, BODY_RADIUS)
 
+func _update_player_shader_visual():
+	"""AAA Visual Overhaul: Update CharacterVisual transforms from player state."""
+	if not character_visual or not sprite_texture:
+		return
+
+	var tex_size = sprite_texture.get_size()
+	var base_scale = SPRITE_HEIGHT / tex_size.y
+	var scale_x = base_scale
+	var scale_y = base_scale
+
+	# Flip based on movement/action direction
+	var flip: bool
+	if is_dashing:
+		# Use dash direction for dash animation
+		flip = dash_direction.x < 0
+	elif is_attacking_melee or is_blocking:
+		# Use facing angle for combat actions
+		flip = facing_angle < -PI / 2.0 or facing_angle > PI / 2.0
+	else:
+		# Use movement direction for walking animation
+		var move_dir_x = last_move_dir.x if abs(last_move_dir.x) > 0.1 else (1.0 if velocity.x > 0 else -1.0)
+		flip = move_dir_x < 0  # Flip when moving left
+
+	# NOTE: flip_sign is NOT used with CharacterVisual - it handles flipping via flip_h
+	# Using flip_sign would create a double-negative (flip_h=true + negative scale = no flip)
+	var flip_sign = 1.0  # Always positive scale for CharacterVisual
+
+	# Squash/stretch
+	var sq = clampf(squash_factor, 0.4, 2.0)
+	scale_y *= sq
+	scale_x *= (2.0 - sq)
+
+	# AAA Animation: Add animation squash/stretch
+	if sprite_animator and animation_frames_loaded:
+		var anim_squash = sprite_animator.get_squash_multiplier()
+		scale_x *= anim_squash.x
+		scale_y *= anim_squash.y
+
+	# Depth scaling in sideview
+	if in_sideview_mode:
+		var depth_scale = DepthPlanes.get_scale_for_y(position.y)
+		scale_x *= depth_scale
+		scale_y *= depth_scale
+
+	# Dashing: smooth, elegant stretch with ease
+	if is_dashing:
+		var dash_t = 1.0 - (dash_timer / DASH_DURATION)  # 0->1 progress
+		# Ease out quad for smooth motion blur effect
+		var ease = 1.0 - pow(1.0 - dash_t, 2.0)
+		var stretch = 1.0 + ease * 0.4  # Peak 1.4x stretch
+		var squish = 1.0 - ease * 0.25   # Peak 0.75x compression
+		scale_x *= stretch
+		scale_y *= squish
+
+	# Position at sprite offset
+	var sprite_y = BODY_RADIUS - (tex_size.y / 2.0 - sprite_feet_padding) * scale_y
+
+	# AAA Animation: Update animation state and apply
+	if sprite_animator and animation_frames_loaded:
+		var anim_state = "idle"
+		var current_combo = 0
+		if is_attacking_melee:
+			anim_state = "attack"
+			# Get which combo is currently active (previous combo since index increments on hit)
+			current_combo = ((combo_index - 1) + COMBO_COUNT) % COMBO_COUNT if combo_window > 0 else 0
+		elif is_dashing:
+			anim_state = "run"
+		elif is_moving:
+			anim_state = "walk"
+
+		sprite_animator.update_animation(get_physics_process_delta_time(), anim_state, velocity, is_on_ground, current_combo)
+
+		# Apply animation offsets (bob, tilt)
+		var anim_offset = sprite_animator.get_animation_offset()
+		character_visual.position = Vector2(anim_offset.x, sprite_y + anim_offset.y)
+
+		# Apply animation rotation
+		var anim_rotation = sprite_animator.get_rotation_offset()
+		character_visual.update_transform(flip, Vector2(scale_x * flip_sign, scale_y), anim_rotation)
+	else:
+		# Fallback: no animation
+		character_visual.update_transform(flip, Vector2(scale_x * flip_sign, scale_y))
+		character_visual.position = Vector2(0, sprite_y)
+
+func _setup_player_shader_visual(game):
+	"""AAA Visual Overhaul: Create CharacterVisual for shader rendering."""
+	_use_shader_visual = true
+	character_visual = CharacterVisual.new()
+	character_visual.name = "Visual"
+	add_child(character_visual)
+	var theme = "grass"
+	if game.map and game.map.get("level_config"):
+		theme = game.map.level_config.get("theme", "grass")
+	character_visual.setup(sprite_texture, {
+		"outline_width": 2.0,
+		"outline_color": CartoonPalette.get_outline_color(theme),
+		"tint": SKIN_TINTS.get(selected_skin, Color.WHITE),
+	})
+	character_visual.set_theme_lighting(theme)
+
+	# AAA Animation System: Set up sprite animator
+	sprite_animator = SpriteAnimator.new()
+	sprite_animator.setup(character_visual)
+
+	# Load animation frames (AI-generated or placeholders)
+	var frames = SpriteFrameLoader.load_character_frames("player")
+	sprite_animator.set_sprite_frames(frames)
+	animation_frames_loaded = true
+
+	print("[Player] ✅ CharacterVisual system initialized")
+	print("[Player] _use_shader_visual = %s" % _use_shader_visual)
+	print("[Player] Animation frames: %s" % SpriteFrameLoader.get_frame_status())
+	print("[Player] Sprite dimensions: %dx%d" % [sprite_texture.get_size().x, sprite_texture.get_size().y])
+	print("[Player] sprite_feet_padding: %.1f pixels" % sprite_feet_padding)
+
 func _is_main_game_sideview(game) -> bool:
 	if game == null or game.map == null:
 		return false
@@ -776,7 +924,34 @@ func _handle_movement_sideview(delta: float, game):
 	# During dash, apply dash movement and skip normal physics
 	if is_dashing:
 		# AAA Upgrade: Use momentum-based dash speed
-		position += dash_direction * current_dash_speed * delta
+		# CRITICAL: Update velocity for animation system
+		var dash_velocity = dash_direction * current_dash_speed
+		velocity = dash_velocity
+		var new_pos = position + dash_velocity * delta
+
+		# Prevent dashing into pits
+		if game and game.map and game.map.has_method("is_position_over_pit"):
+			if not game.map.is_position_over_pit(new_pos):
+				position = new_pos
+			else:
+				# Hit a pit - stop dash
+				is_dashing = false
+				dash_timer = 0
+				velocity = Vector2.ZERO
+				return
+		else:
+			position = new_pos
+
+		# Apply collision resolution (prevent phasing through walls/floors)
+		if game and game.map and game.map.has_method("resolve_sideview_collision"):
+			var result = game.map.resolve_sideview_collision(position, velocity, BODY_RADIUS, false)
+			position = result.position
+			# If collision stopped us, cancel dash
+			if result.velocity.length() < velocity.length() * 0.5:
+				is_dashing = false
+				dash_timer = 0
+			velocity = result.velocity
+
 		if dash_trail.size() == 0 or position.distance_to(dash_trail[-1].pos) > 8.0:
 			dash_trail.append({"pos": position, "alpha": 0.5, "angle": facing_angle})
 		# Clamp to map bounds during dash
@@ -1115,7 +1290,9 @@ func _handle_movement_sideview(delta: float, game):
 		if impact_strength > 0.6:
 			if game.has_method("trigger_landing_impact"):
 				game.trigger_landing_impact()
-			# Camera zoom pulse on heavy landing
+			if game.has_method("trigger_camera_zoom_pulse"):
+				game.trigger_camera_zoom_pulse(2.2)
+		elif impact_strength > 0.35:
 			if game.has_method("trigger_camera_zoom_pulse"):
 				game.trigger_camera_zoom_pulse(1.0)
 
@@ -1972,12 +2149,37 @@ func _draw():
 
 	# Blink when invincible (but not during dash or grapple - those keep player visible)
 	if invincibility_timer > 0 and not is_dashing and not is_grappling and fmod(invincibility_timer, 0.12) < 0.06:
+		if _use_shader_visual and character_visual:
+			character_visual.visible = false
 		return
+	elif _use_shader_visual and character_visual:
+		character_visual.visible = true
+
+	# AAA Visual Overhaul: Update shader visual transforms
+	if _use_shader_visual and character_visual:
+		_update_player_shader_visual()
+		# Flash on hit
+		if hit_flash_timer > 0 and character_visual.flash_timer <= 0:
+			character_visual.trigger_flash(0.1)
+		# Skip sprite drawing but continue with effects (grapple, aim, trails, etc.)
+		# Don't return early - let effects draw below
 
 	var flash = hit_flash_timer > 0
 
-	# Draw dash afterimages first (behind everything)
-	if dash_trail.size() > 0 and sprite_texture:
+	# AAA: Draw dash wind streaks (subtle motion lines)
+	if is_dashing:
+		var wind_count = 8
+		for i in range(wind_count):
+			var offset_dist = randf_range(20.0, 50.0)
+			var offset_angle = dash_direction.angle() + randf_range(-0.3, 0.3)
+			var offset = Vector2(cos(offset_angle), sin(offset_angle)) * offset_dist
+			var wind_alpha = randf_range(0.1, 0.3) * (1.0 - dash_timer / DASH_DURATION)
+			var wind_length = randf_range(8.0, 16.0)
+			var wind_end = offset + Vector2(cos(offset_angle), sin(offset_angle)) * wind_length
+			draw_line(offset, wind_end, Color(0.8, 0.9, 1.0, wind_alpha), 2.0)
+
+	# Draw dash afterimages first (behind everything) - skip if using CharacterVisual
+	if dash_trail.size() > 0 and sprite_texture and not _use_shader_visual:
 		var tex_size = sprite_texture.get_size()
 		var ds = SPRITE_HEIGHT / tex_size.y
 		for ghost in dash_trail:
@@ -2054,8 +2256,8 @@ func _draw():
 	# Current combo config (for animation)
 	var active_combo = ((combo_index - 1) + COMBO_COUNT) % COMBO_COUNT if combo_window > 0 else 0
 
-	# Draw sprite
-	if sprite_texture:
+	# Draw sprite (skip if using CharacterVisual shader system)
+	if sprite_texture and not _use_shader_visual:
 		var tex_size = sprite_texture.get_size()
 		var base_scale = SPRITE_HEIGHT / tex_size.y
 
@@ -2093,31 +2295,34 @@ func _draw():
 			scale_y = base_scale * (0.9 - block_breath)
 			tilt = (facing_angle * 0.06) * flip_sign  # Slight lean into block direction
 		elif is_attacking_melee:
-			# Combo-dependent animation
+			# CARTOON: Exaggerated combo animation - clear anticipation, strike, recovery
 			var cfg = COMBO_CONFIGS[active_combo]
 			var attack_dur = cfg.duration
 			var t = melee_attack_timer / attack_dur  # 1 -> 0
 			var punch = sin(t * PI)
+			# Anticipation phase: wind-up before strike (first 25% of duration)
+			var anticipation = 1.0 - clampf(t * 4.0, 0.0, 1.0)
+			var strike = punch
 
 			match active_combo:
-				0:  # Quick horizontal slash
-					offset_x = cos(facing_angle) * punch * cfg.lunge
-					offset_y = sin(facing_angle) * punch * cfg.lunge
-					tilt = punch * 0.25 * flip_sign
-					scale_x = base_scale * (1.0 + punch * 0.18)
-					scale_y = base_scale * (1.0 - punch * 0.14)
-				1:  # Upward thrust
-					offset_x = cos(facing_angle) * punch * cfg.lunge
-					offset_y = sin(facing_angle) * punch * cfg.lunge - punch * 10.0
-					tilt = punch * -0.15 * flip_sign
-					scale_x = base_scale * (1.0 - punch * 0.1)
-					scale_y = base_scale * (1.0 + punch * 0.2)
-				2:  # Heavy spin
-					offset_x = cos(facing_angle) * punch * cfg.lunge
-					offset_y = sin(facing_angle) * punch * cfg.lunge
-					tilt = t * TAU * flip_sign * 0.6  # Spin!
-					scale_x = base_scale * (1.0 + punch * 0.25)
-					scale_y = base_scale * (1.0 + punch * 0.15)
+				0:
+					offset_x = cos(facing_angle) * strike * cfg.lunge
+					offset_y = sin(facing_angle) * strike * cfg.lunge
+					tilt = (anticipation * -0.2 + strike * 0.35) * flip_sign
+					scale_x = base_scale * (1.0 - anticipation * 0.12 + strike * 0.22)
+					scale_y = base_scale * (1.0 + anticipation * 0.08 - strike * 0.18)
+				1:
+					offset_x = cos(facing_angle) * strike * cfg.lunge
+					offset_y = sin(facing_angle) * strike * cfg.lunge - strike * 14.0
+					tilt = (anticipation * 0.15 + strike * -0.22) * flip_sign
+					scale_x = base_scale * (1.0 - anticipation * 0.08 - strike * 0.12)
+					scale_y = base_scale * (1.0 + anticipation * 0.06 + strike * 0.28)
+				2:
+					offset_x = cos(facing_angle) * strike * cfg.lunge
+					offset_y = sin(facing_angle) * strike * cfg.lunge
+					tilt = (anticipation * 0.3 + t * TAU * 0.75) * flip_sign
+					scale_x = base_scale * (1.0 - anticipation * 0.15 + strike * 0.35)
+					scale_y = base_scale * (1.0 + anticipation * 0.1 + strike * 0.22)
 		elif is_moving:
 			# Walk: lean + squash/stretch (no vertical bob - keeps feet on ground)
 			var step = sin(walk_anim)
@@ -2162,14 +2367,35 @@ func _draw():
 			)
 			draw_texture(sprite_texture, -tex_size / 2.0, Color(0.3, 0.6, 1.0, trail.alpha))
 
-		# Draw sprite outline (slightly larger, dark)
-		var outline_bump = 1.05
+		# CARTOON: Bold outline for strong silhouette (2 layers: dark core + softer edge)
+		var outline_scale = 1.12
+		# Outer soft edge (warm shadow tone)
 		draw_set_transform(
 			Vector2(offset_x, sprite_y),
 			tilt,
-			Vector2(scale_x * flip_sign * outline_bump, scale_y * outline_bump)
+			Vector2(scale_x * flip_sign * outline_scale, scale_y * outline_scale)
 		)
-		draw_texture(sprite_texture, -tex_size / 2.0, Color(0, 0, 0, 0.5))
+		draw_texture(sprite_texture, -tex_size / 2.0, Color(0.08, 0.05, 0.15, 0.6))
+		# Inner crisp edge (strong readable silhouette)
+		var inner_outline = 1.05
+		draw_set_transform(
+			Vector2(offset_x, sprite_y),
+			tilt,
+			Vector2(scale_x * flip_sign * inner_outline, scale_y * inner_outline)
+		)
+		draw_texture(sprite_texture, -tex_size / 2.0, Color(0.02, 0.01, 0.08, 0.9))
+
+		# CARTOON: Stylized rim lighting (soft bright edge from key light - upper-left)
+		# Key light direction: (-1, -1) normalized -> top-left
+		var rim_offset = Vector2(-flip_sign * 3.0, -4.0)
+		var rim_scale = 1.04
+		draw_set_transform(
+			Vector2(offset_x + rim_offset.x, sprite_y + rim_offset.y),
+			tilt,
+			Vector2(scale_x * flip_sign * rim_scale, scale_y * rim_scale)
+		)
+		# Warm highlight on lit edge (amber-white)
+		draw_texture(sprite_texture, -tex_size / 2.0, Color(1.0, 0.95, 0.85, 0.45))
 
 		# Draw main sprite
 		sprite_xform = Transform2D(tilt, Vector2(scale_x * flip_sign, scale_y), 0.0, Vector2(offset_x, sprite_y))
@@ -2768,21 +2994,32 @@ func _draw_oval(center: Vector2, w: float, h: float, rot: float, col: Color):
 	draw_colored_polygon(pts, col)
 
 func _draw_shadow_soft(body_radius: float, depth_y: float, pulse: float = 1.0, offset_x: float = 0.0, offset_y: float = 26.0):
-	"""AAA Upgrade: 5-layer gradient shadow with depth-based scaling for soft, natural falloff."""
+	"""CARTOON: Strong contact shadow - dark core + soft falloff for weight and grounding."""
 	var shadow_alpha = DepthPlanes.get_shadow_alpha_for_y(depth_y)
 	var shadow_scale = DepthPlanes.get_shadow_scale_for_y(depth_y)
 	var shadow_offset = Vector2(offset_x, offset_y)
 
-	# Multi-layer shadow for soft falloff (5 layers)
-	var layers = 5
-	for i in range(layers):
-		var layer_t = float(i) / float(layers)
-		var radius_x = body_radius * shadow_scale * pulse * (0.6 + layer_t * 0.4)
-		var radius_y = radius_x * 0.5  # Flattened ellipse
-		var alpha = shadow_alpha * (1.0 - layer_t * 0.7)
-		var color = Color(0, 0, 0, alpha / float(layers))
+	# CARTOON: Strong dark contact core (clear shape, no muddiness)
+	var core_radius_x = body_radius * shadow_scale * pulse * 0.85
+	var core_radius_y = core_radius_x * 0.4
+	var contact_alpha = minf(0.85, shadow_alpha * 1.4)
+	var core_points = PackedVector2Array()
+	for j in range(16):
+		var angle = float(j) / 16.0 * TAU
+		var px = shadow_offset.x + cos(angle) * core_radius_x
+		var py = shadow_offset.y + sin(angle) * core_radius_y
+		core_points.append(Vector2(px, py))
+	# Slightly cool shadow tint (cartoon rule: cool in shadows)
+	draw_polygon(core_points, PackedColorArray([Color(0.05, 0.05, 0.12, contact_alpha)]))
 
-		# Ellipse approximation (12-point polygon for performance)
+	# Soft outer gradient (2 layers for transition)
+	var layers = 2
+	for i in range(layers):
+		var layer_t = float(i + 1) / float(layers + 1)
+		var radius_x = core_radius_x * (1.0 + layer_t * 0.5)
+		var radius_y = core_radius_y * (1.0 + layer_t * 0.5)
+		var alpha = shadow_alpha * 0.4 * (1.0 - layer_t)
+		var color = Color(0.08, 0.06, 0.15, alpha)
 		var points = PackedVector2Array()
 		for j in range(12):
 			var angle = float(j) / 12.0 * TAU
