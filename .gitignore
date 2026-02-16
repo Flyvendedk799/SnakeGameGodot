@@ -19,6 +19,9 @@ mono_crash.*.json
 Thumbs.db
 desktop.ini
 
+# Debug logs
+debug_output.log
+
 # IDE
 .vs/
 .vscode/

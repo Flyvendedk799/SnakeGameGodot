@@ -792,21 +792,25 @@ func _draw_terrain():
 				draw_rect(rect, Color8(65, 60, 55))
 				draw_rect(Rect2(rect.position.x, rect.position.y, rect.size.x, rect.size.y * 0.3), Color8(85, 80, 75))
 				draw_rect(rect, Color8(40, 38, 36), false, 2.5)
-				# Rock texture lines
+				# Rock texture lines (deterministic - avoid randf in draw loop)
 				for i in range(int(rect.size.y / 15)):
-					var y = rect.position.y + i * 15 + randf() * 5
+					var jitter = (hash(Vector2(rect.position.x, i * 1.7)) % 500) / 100.0
+					var y = rect.position.y + i * 15 + jitter
 					draw_line(Vector2(rect.position.x, y), Vector2(rect.position.x + rect.size.x, y), Color8(50, 48, 45, 100), 1.0)
 
 			MapConfig.TerrainType.ROUGH:
-				# Rough terrain - brown/tan with scattered texture
+				# Rough terrain - brown/tan with scattered texture (deterministic, no randf in draw)
 				var roughness_alpha = int(100 + t.movement_penalty * 100)
 				draw_rect(rect, Color8(110, 90, 65, roughness_alpha))
 				draw_rect(rect, Color8(95, 75, 50, roughness_alpha / 2))
-				# Scattered rough patches
-				for i in range(int(rect.size.x * rect.size.y / 400)):
-					var px = rect.position.x + randf() * rect.size.x
-					var py = rect.position.y + randf() * rect.size.y
-					draw_circle(Vector2(px, py), 3 + randf() * 3, Color8(85, 70, 45, 120))
+				# Scattered rough patches - use hash for deterministic placement (perf: avoid randf in loop)
+				var n_patches = mini(int(rect.size.x * rect.size.y / 800), 25)
+				for i in range(n_patches):
+					var h = hash(Vector2(rect.position.x * 0.1 + i * 7.3, rect.position.y * 0.1 + i * 11.7 + anim_time * 0.5))
+					var px = rect.position.x + (abs(h) % 1000) / 1000.0 * rect.size.x
+					var py = rect.position.y + (abs(h / 1000) % 1000) / 1000.0 * rect.size.y
+					var r = 3.0 + (abs(h) % 300) / 300.0 * 3.0
+					draw_circle(Vector2(px, py), r, Color8(85, 70, 45, 120))
 
 			MapConfig.TerrainType.ELEVATION_HIGH:
 				# High ground - lighter with edge highlight

@@ -106,6 +106,9 @@ var companion_chopper_input: Vector2 = Vector2.ZERO
 # Per-frame cache for ally target selection (avoids O(n*m) iteration)
 var ally_target_counts: Dictionary = {}
 
+# Spatial grid for fast neighbor queries (combat, targeting)
+var spatial_grid: SpatialGrid
+
 # Radar reveal timer
 var radar_reveal_timer: float = 0.0
 
@@ -116,6 +119,9 @@ const COMPANION_MINIMAP_INTERVAL: float = 0.05  # 20Hz for real-time minimap/cho
 # Companion action HUD notification (array of {text, timer})
 var companion_action_feed: Array = []
 const MAX_COMPANION_ACTIONS: int = 3
+
+# Debug snapshot (Karen Defense perf overview)
+var _debug_karen_timer: float = 0.0
 
 # Cross-system combo mechanics
 var combo_meter: float = 0.0
@@ -276,6 +282,7 @@ func _build_scene_tree():
 	post_layer.add_child(chromatic_overlay)
 
 func _setup_systems():
+	spatial_grid = SpatialGrid.new()
 	map.setup(self, current_map_id)
 	economy.configure_for_map(map.map_config)
 	# Apply camera zoom from map config
@@ -303,6 +310,21 @@ func _update_visibility():
 		game_camera.enabled = in_game
 	hud.visible = in_game and state != GameState.GAME_OVER
 	world_select.visible = state == GameState.WORLD_SELECT
+
+func get_visible_world_rect() -> Rect2:
+	"""World-space AABB of what the camera sees. Use for culling off-screen draws."""
+	if not game_camera:
+		return Rect2(0, 0, SCREEN_W, SCREEN_H)
+	var vs = get_viewport().get_visible_rect().size
+	var zoom = game_camera.zoom.x
+	var half = vs / zoom * 0.5
+	var margin = 80.0  # Extra margin so entities don't pop
+	return Rect2(
+		game_camera.position.x - half.x - margin,
+		game_camera.position.y - half.y - margin,
+		vs.x / zoom + margin * 2,
+		vs.y / zoom + margin * 2
+	)
 
 func start_hitstop(duration: float):
 	hitstop_timer = duration
@@ -431,6 +453,24 @@ func _update_companion_game_state():
 	# Authoritative stream: keep sending latest state snapshot with monotonic sequence.
 	companion_session.send_game_state(state_name, _last_companion_state_seq, current_wave)
 
+func _log_karen_snapshot(delta: float):
+	var dl = get_node_or_null("/root/DebugLogger")
+	if not dl:
+		return
+	var n_enemies = enemy_container.get_child_count()
+	var n_allies = ally_container.get_child_count()
+	var n_projs = projectile_container.get_child_count()
+	var n_gold = gold_container.get_child_count()
+	var fps = Engine.get_frames_per_second()
+	var pt_ms = Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0
+	var buf = []
+	buf.append("--- Karen Defense Snapshot ---")
+	buf.append("FPS: %d  Process: %.1f ms  Delta: %.4f  Wave: %d" % [fps, pt_ms, delta, current_wave])
+	buf.append("Entities: enemies=%d allies=%d projs=%d gold=%d" % [n_enemies, n_allies, n_projs, n_gold])
+	buf.append("Pathfind budget remaining: %d" % EnemyEntity._pathfind_budget)
+	for line in buf:
+		dl.write_log(line)
+
 func _process_title(delta):
 	title_time += delta
 	var mouse = get_global_mouse_position()
@@ -460,6 +500,8 @@ func _process_wave(delta):
 			player_node.update_player(delta, self)
 		if p2_joined and not player2_node.is_dead:
 			player2_node.update_player(delta, self)
+		if delta > 0.05:
+			particles.trim_on_lag()
 		particles.update(delta)
 		_update_damage_numbers(delta)
 		if p2_join_flash_timer > 0:
@@ -474,8 +516,17 @@ func _process_wave(delta):
 	_apply_player_tether(delta)
 	wave_director.update(delta)
 
+	# Rebuild spatial grid for fast neighbor queries (combat, targeting)
+	if spatial_grid:
+		spatial_grid.rebuild(self)
+
 	# Reset pathfinding budget each frame (limits A* runs to prevent 1 FPS freeze)
-	EnemyEntity._pathfind_budget = 3
+	var n_enemies = enemy_container.get_child_count()
+	EnemyEntity._pathfind_budget = 2 if n_enemies > 20 else 3
+	_debug_karen_timer += delta
+	if _debug_karen_timer >= 5.0:
+		_debug_karen_timer = 0.0
+		_log_karen_snapshot(delta)
 	for enemy in enemy_container.get_children():
 		if enemy.has_meta("emp_stun_timer"):
 			var stun_left = float(enemy.get_meta("emp_stun_timer")) - delta
@@ -532,6 +583,8 @@ func _process_wave(delta):
 			emp_hp_snapshot[enemy] = enemy.current_hp
 	combat_system.resolve_frame(delta)
 	_apply_emp_followup_bonus(emp_hp_snapshot)
+	if delta > 0.05:
+		particles.trim_on_lag()
 	particles.update(delta)
 	_update_damage_numbers(delta)
 
@@ -553,6 +606,8 @@ func _process_wave(delta):
 	total_gold_earned = economy.p1_gold + economy.p2_gold
 
 func _process_between_waves(delta):
+	if delta > 0.05:
+		particles.trim_on_lag()
 	particles.update(delta)
 	time_elapsed += delta
 

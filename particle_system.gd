@@ -2,7 +2,7 @@ class_name ParticleSystem
 extends RefCounted
 
 var particles: Array = []
-const MAX_PARTICLES = 350
+const MAX_PARTICLES = 220  # Lower cap to prevent sudden draw/GC spikes
 const PARTICLE_LIFETIME = 0.7
 
 func emit_burst(x: float, y: float, color: Color, count: int = 12, lifetime: float = PARTICLE_LIFETIME):
@@ -164,16 +164,18 @@ func _enforce_limit(incoming: int):
 	if particles.size() + incoming <= MAX_PARTICLES:
 		return
 	var excess = (particles.size() + incoming) - MAX_PARTICLES
-	for i in range(excess):
-		particles.pop_front()
+	# Single slice instead of O(n) pop_front loop - prevents sudden frame spike
+	particles = particles.slice(excess, particles.size())
 
 func update(dt: float):
+	# Only rebuild array when particles die (avoids allocation when all alive)
 	var alive: Array = []
 	for p in particles:
 		if p.is_alive():
 			p.update(dt)
 			alive.append(p)
-	particles = alive
+	if alive.size() < particles.size():
+		particles = alive
 
 func draw(canvas: CanvasItem):
 	for p in particles:
@@ -181,3 +183,8 @@ func draw(canvas: CanvasItem):
 
 func clear():
 	particles.clear()
+
+## Call when frame delta was large - trim particles to recover from lag spike
+func trim_on_lag():
+	if particles.size() > 100:
+		particles = particles.slice(particles.size() - 80, particles.size())

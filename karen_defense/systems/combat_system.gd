@@ -39,7 +39,8 @@ func _check_player_melee_hits():
 		# Combo hit 3 (spin) can hit more targets
 		var max_targets = p.max_melee_targets + (2 if combo_idx == 2 else 0)
 		var range_sq = p.melee_range * p.melee_range
-		for enemy in game.enemy_container.get_children():
+		var candidates = game.get("spatial_grid").get_enemies_near(p.position, p.melee_range) if game.get("spatial_grid") else game.enemy_container.get_children()
+		for enemy in candidates:
 			if hits >= max_targets:
 				break
 			if enemy.state == EnemyEntity.EnemyState.DEAD or enemy.state == EnemyEntity.EnemyState.DYING:
@@ -94,7 +95,9 @@ func _check_projectile_hits():
 		if proj is HelicopterBombEntity or proj is SupplyDropEntity or proj is CompanionHelicopterEntity:
 			continue
 		if proj.source == "player":
-			for enemy in game.enemy_container.get_children():
+			var check_radius = 80.0  # Max entity_size + proj.SIZE
+			var candidates = game.get("spatial_grid").get_enemies_near(proj.position, check_radius) if game.get("spatial_grid") else game.enemy_container.get_children()
+			for enemy in candidates:
 				if enemy.state == EnemyEntity.EnemyState.DEAD or enemy.state == EnemyEntity.EnemyState.DYING:
 					continue
 				var threshold = enemy.entity_size + proj.SIZE
@@ -117,9 +120,10 @@ func _check_projectile_hits():
 					proj.queue_free()
 					break
 		elif proj.source == "enemy":
-			# Check all active players
+			# Check all active players (spatial grid for when many projectiles)
 			var hit_player = false
-			for p in active_players:
+			var player_candidates = game.get("spatial_grid").get_players_near(proj.position, 50.0) if game.get("spatial_grid") else active_players
+			for p in player_candidates:
 				var thresh = p.BODY_RADIUS + proj.SIZE
 				if proj.position.distance_squared_to(p.position) < thresh * thresh:
 					p.take_damage(proj.damage, game)
@@ -128,8 +132,9 @@ func _check_projectile_hits():
 					break
 			if hit_player:
 				continue
-			# Check allies
-			for ally in game.ally_container.get_children():
+			# Check allies (spatial grid)
+			var ally_candidates = game.get("spatial_grid").get_allies_near(proj.position, 50.0) if game.get("spatial_grid") else game.ally_container.get_children()
+			for ally in ally_candidates:
 				if ally.current_hp <= 0:
 					continue
 				var thresh = ally.entity_size + proj.SIZE

@@ -293,7 +293,8 @@ func _find_nearest_enemy_any_distance(game) -> EnemyEntity:
 	var best_dist_sq: float = INF
 	var out_range_sq = OUTSIDE_ALLY_SEEK_RANGE * OUTSIDE_ALLY_SEEK_RANGE
 	var max_seek_sq = MAX_SEEK_DISTANCE * MAX_SEEK_DISTANCE
-	for enemy in game.enemy_container.get_children():
+	var candidates = game.get("spatial_grid").get_enemies_near(position, OUTSIDE_ALLY_SEEK_RANGE) if game.get("spatial_grid") else game.enemy_container.get_children()
+	for enemy in candidates:
 		if not _is_valid_target(enemy):
 			continue
 		var dist_sq = position.distance_squared_to(enemy.position)
@@ -318,7 +319,8 @@ func _find_best_enemy(game) -> EnemyEntity:
 	var center_x = game.map.get_player_anchor().x if game.map.has_method("get_player_anchor") else 640.0
 	var max_seek = detect_range * 2.0 if is_outside_ally else detect_range * 1.5
 	var max_seek_sq = max_seek * max_seek
-	for enemy in game.enemy_container.get_children():
+	var candidates = game.get("spatial_grid").get_enemies_near(position, max_seek) if game.get("spatial_grid") else game.enemy_container.get_children()
+	for enemy in candidates:
 		if not _is_valid_target(enemy):
 			continue
 		var dist_sq = position.distance_squared_to(enemy.position)
@@ -343,7 +345,8 @@ func _find_best_enemy(game) -> EnemyEntity:
 
 func _apply_separation(delta: float, game):
 	var push = Vector2.ZERO
-	for ally in game.ally_container.get_children():
+	var ally_candidates = game.get("spatial_grid").get_allies_near(position, 60.0) if game.get("spatial_grid") else game.ally_container.get_children()
+	for ally in ally_candidates:
 		if ally == self:
 			continue
 		var d = position.distance_to(ally.position)
@@ -392,6 +395,12 @@ func _update_trail(delta: float):
 func _draw():
 	if current_hp <= 0:
 		return
+	# Viewport culling: skip expensive draw when off-screen
+	var root = get_tree().current_scene
+	if root and root.has_method("get_visible_world_rect"):
+		var vis = root.get_visible_world_rect()
+		if not vis.has_point(position):
+			return
 	var flash = hit_flash_timer > 0
 	var s = entity_size
 

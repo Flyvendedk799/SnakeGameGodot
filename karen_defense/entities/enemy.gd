@@ -183,47 +183,43 @@ func _state_chasing(delta, game):
 	# Build candidate list from all alive players + allies — chase across entire map
 	# Prioritize players over allies (enemies are drawn to the main threat)
 	var best_target = null
-	var best_dist = INF
+	var best_dist_sq = INF
 	var best_priority = 0  # Higher = more attractive target
 
 	if not game.player_node.is_dead:
-		var d = position.distance_to(game.player_node.position)
-		# Players get priority bonus (enemies prefer attacking players)
+		var d_sq = position.distance_squared_to(game.player_node.position)
 		var priority = 3
-		# Low-HP player is even more attractive (go for the kill!)
 		if game.player_node.current_hp < game.player_node.max_hp * 0.4:
 			priority += 1
-		if priority > best_priority or (priority == best_priority and d < best_dist):
-			best_dist = d
+		if priority > best_priority or (priority == best_priority and d_sq < best_dist_sq):
+			best_dist_sq = d_sq
 			best_target = game.player_node
 			best_priority = priority
 	if game.p2_joined and game.player2_node and not game.player2_node.is_dead:
-		var d = position.distance_to(game.player2_node.position)
+		var d_sq = position.distance_squared_to(game.player2_node.position)
 		var priority = 3
 		if game.player2_node.current_hp < game.player2_node.max_hp * 0.4:
 			priority += 1
-		if priority > best_priority or (priority == best_priority and d < best_dist):
-			best_dist = d
+		if priority > best_priority or (priority == best_priority and d_sq < best_dist_sq):
+			best_dist_sq = d_sq
 			best_target = game.player2_node
 			best_priority = priority
-	for ally in game.ally_container.get_children():
+	var nearby_sq = 120.0 * 120.0
+	var ally_candidates = game.get("spatial_grid").get_allies_near(position, 200.0) if game.get("spatial_grid") else game.ally_container.get_children()
+	for ally in ally_candidates:
 		if ally.current_hp <= 0 or ally.state == AllyEntity.AllyState.DEAD: continue
-		var d = position.distance_to(ally.position)
-		var priority = 1
-		# Nearby allies are more attractive than distant players
-		if d < 120.0:
-			priority = 2
-		if priority > best_priority or (priority == best_priority and d < best_dist):
-			best_dist = d
+		var d_sq = position.distance_squared_to(ally.position)
+		var priority = 2 if d_sq < nearby_sq else 1
+		if priority > best_priority or (priority == best_priority and d_sq < best_dist_sq):
+			best_dist_sq = d_sq
 			best_target = ally
 			best_priority = priority
 	if best_target == null:
-		# No valid targets, move toward fort center
 		best_target = game.player_node
-		best_dist = position.distance_to(game.player_node.position)
+		best_dist_sq = position.distance_squared_to(game.player_node.position)
 	chase_target = best_target
 	var attack_range = ranged_range if is_ranged else 28.0
-	if best_dist <= attack_range:
+	if best_dist_sq <= attack_range * attack_range:
 		state = EnemyState.ATTACKING
 		return
 
@@ -263,7 +259,9 @@ func _resolve_chase_point(target_pos: Vector2, game) -> Vector2:
 		if _pathfind_budget > 0:
 			_pathfind_budget -= 1
 			_build_nav_path(target_pos, game)
-		nav_repath_timer = 0.5
+		# Repath less often when many enemies (reduces A* load during waves)
+		var enemy_count = game.enemy_container.get_child_count()
+		nav_repath_timer = 0.7 if enemy_count > 15 else 0.5
 	if not nav_path.is_empty():
 		if nav_path_index < nav_path.size() and position.distance_to(nav_path[nav_path_index]) < 24.0:
 			nav_path_index += 1
@@ -440,6 +438,11 @@ func _update_trail(delta: float):
 
 func _draw():
 	if state == EnemyState.DEAD: return
+	# Viewport culling: skip expensive draw when off-screen (shadow, sprite, trail, etc.)
+	if game and game.has_method("get_visible_world_rect"):
+		var vis = game.get_visible_world_rect()
+		if not vis.has_point(position):
+			return  # Fully cull - nothing to draw when off-screen
 	var dying_scale = 1.0
 	if state == EnemyState.DYING:
 		var t = dying_timer / 0.3
