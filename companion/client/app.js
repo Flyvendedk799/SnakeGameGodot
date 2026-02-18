@@ -21,6 +21,7 @@ const btnBomb = document.getElementById('btnBomb');
 const btnSupply = document.getElementById('btnSupply');
 const btnRadar = document.getElementById('btnRadar');
 const btnEmp = document.getElementById('btnEmp');
+const btnShoot = document.getElementById('btnShoot');
 const btnStats = document.getElementById('btnStats');
 const btnToggleSound = document.getElementById('btnToggleSound');
 const btnCloseStats = document.getElementById('btnCloseStats');
@@ -35,13 +36,15 @@ const BOMBS_PER_WAVE = 2;
 const SUPPLIES_PER_WAVE = 1;
 const RADAR_PER_WAVE = 1;
 const EMP_PER_WAVE = 1;
+const COOLDOWN_SHOOT_MS = 8000;
+const SHOOTS_PER_WAVE = 3;
 const MM_SIZE = 300;
 const PAD = 10;
 const CHOPPER_INPUT_THROTTLE_MS = 50;  // ~20 Hz for snappier chopper control
 
 let ws = null, sessionCode = null, reconnectToken = null;
-let lastBombAt = 0, lastSupplyAt = 0, lastRadarAt = 0, lastEmpAt = 0;
-let bombsRemaining = BOMBS_PER_WAVE, suppliesRemaining = SUPPLIES_PER_WAVE, radarsRemaining = RADAR_PER_WAVE, empsRemaining = EMP_PER_WAVE;
+let lastBombAt = 0, lastSupplyAt = 0, lastRadarAt = 0, lastEmpAt = 0, lastShootAt = 0;
+let bombsRemaining = BOMBS_PER_WAVE, suppliesRemaining = SUPPLIES_PER_WAVE, radarsRemaining = RADAR_PER_WAVE, empsRemaining = EMP_PER_WAVE, shootsRemaining = SHOOTS_PER_WAVE;
 let selectedAbility = 'bomb';
 let gameState = 'waiting';
 let currentWave = 0;
@@ -438,7 +441,8 @@ const abilityInfo = {
   bomb: { cooldownMs: COOLDOWN_BOMB_MS, maxPerWave: BOMBS_PER_WAVE, hint: 'Tap map to drop bomb · Long-press to ping', needsTap: true },
   supply: { cooldownMs: COOLDOWN_SUPPLY_MS, maxPerWave: SUPPLIES_PER_WAVE, hint: 'Tap map to drop supply · Long-press to ping', needsTap: true },
   radar: { cooldownMs: COOLDOWN_RADAR_MS, maxPerWave: RADAR_PER_WAVE, hint: 'Reveal enemies for 5 seconds', needsTap: false },
-  emp: { cooldownMs: COOLDOWN_EMP_MS, maxPerWave: EMP_PER_WAVE, hint: 'Tap map to stun (2s) · Long-press to ping', needsTap: true }
+  emp: { cooldownMs: COOLDOWN_EMP_MS, maxPerWave: EMP_PER_WAVE, hint: 'Tap map to stun (2s) · Long-press to ping', needsTap: true },
+  shoot: { cooldownMs: COOLDOWN_SHOOT_MS, maxPerWave: SHOOTS_PER_WAVE, hint: 'Tap map to strafe (25 dmg burst) · Long-press to ping', needsTap: true }
 };
 
 function connectionQualityTier() {
@@ -509,6 +513,7 @@ function setSelectedAbility(ability) {
   btnBomb.classList.toggle('selected', ability === 'bomb');
   btnSupply.classList.toggle('selected', ability === 'supply');
   btnEmp.classList.toggle('selected', ability === 'emp');
+  if (btnShoot) btnShoot.classList.toggle('selected', ability === 'shoot');
   btnRadar.classList.toggle('selected', ability === 'radar');
   abilityHintEl.textContent = abilityInfo[ability].hint;
   saveUiContext();
@@ -516,7 +521,7 @@ function setSelectedAbility(ability) {
 
 function setControlsPaused(paused) {
   const disable = paused;
-  [btnBomb, btnSupply, btnRadar, btnEmp, minimap, document.getElementById('joystickBase')].forEach((el) => {
+  [btnBomb, btnSupply, btnRadar, btnEmp, btnShoot, minimap, document.getElementById('joystickBase')].forEach((el) => {
     if (!el) return;
     if (disable) el.classList.add('disabled');
     else el.classList.remove('disabled');
@@ -671,6 +676,7 @@ function setupWsHandlers(socket) {
       resetMinimapState();
       radarsRemaining = RADAR_PER_WAVE;
       empsRemaining = EMP_PER_WAVE;
+      shootsRemaining = SHOOTS_PER_WAVE;
       latestStateSeq = 0;
       hasAuthoritativeState = false;
       gameState = 'waiting';
@@ -734,6 +740,7 @@ function setupWsHandlers(socket) {
       suppliesRemaining = SUPPLIES_PER_WAVE;
       radarsRemaining = RADAR_PER_WAVE;
       empsRemaining = EMP_PER_WAVE;
+      shootsRemaining = SHOOTS_PER_WAVE;
       stats.wavesAssisted++;
       saveStats();
     } else if (m.type === 'minimap_full') {
@@ -902,10 +909,10 @@ function canUseAbility(ability) {
   if (!hasAuthoritativeState || gameState !== 'wave_active') return false;
   const info = abilityInfo[ability];
   if (!info) return false;
-  const lastAt = ability === 'bomb' ? lastBombAt : ability === 'supply' ? lastSupplyAt : ability === 'radar' ? lastRadarAt : lastEmpAt;
+  const lastAt = ability === 'bomb' ? lastBombAt : ability === 'supply' ? lastSupplyAt : ability === 'radar' ? lastRadarAt : ability === 'shoot' ? lastShootAt : lastEmpAt;
   if (!lastAt) return true;
   if (Date.now() - lastAt < info.cooldownMs) return false;
-  const rem = ability === 'bomb' ? bombsRemaining : ability === 'supply' ? suppliesRemaining : ability === 'radar' ? radarsRemaining : empsRemaining;
+  const rem = ability === 'bomb' ? bombsRemaining : ability === 'supply' ? suppliesRemaining : ability === 'radar' ? radarsRemaining : ability === 'shoot' ? shootsRemaining : empsRemaining;
   return rem > 0;
 }
 
@@ -914,7 +921,7 @@ function canDrop(ability) {
 }
 
 function getCooldownRemaining(ability) {
-  const lastAt = ability === 'bomb' ? lastBombAt : ability === 'supply' ? lastSupplyAt : ability === 'radar' ? lastRadarAt : lastEmpAt;
+  const lastAt = ability === 'bomb' ? lastBombAt : ability === 'supply' ? lastSupplyAt : ability === 'radar' ? lastRadarAt : ability === 'shoot' ? lastShootAt : lastEmpAt;
   if (!lastAt) return 0;
   const info = abilityInfo[ability];
   return Math.max(0, info.cooldownMs - (Date.now() - lastAt));
@@ -1259,8 +1266,12 @@ function doDrop(e) {
   const { x, y } = getMinimapNormCoords(e);
   const msg = selectedAbility === 'bomb' ? { type: 'helicopter_drop', x, y } :
                selectedAbility === 'supply' ? { type: 'supply_drop', x, y } :
-               selectedAbility === 'emp' ? { type: 'emp_drop', x, y } : null;
-  if (msg) ws.send(JSON.stringify(msg));
+               selectedAbility === 'emp' ? { type: 'emp_drop', x, y } :
+               selectedAbility === 'shoot' ? { type: 'chopper_shoot', x, y } : null;
+  if (msg) {
+    ws.send(JSON.stringify(msg));
+    if (selectedAbility === 'shoot') { lastShootAt = Date.now(); shootsRemaining = Math.max(0, shootsRemaining - 1); }
+  }
 }
 
 const PING_LONG_PRESS_MS = 500;
@@ -1445,7 +1456,8 @@ function updateAbilityButtons() {
     { btn: btnBomb, ability: 'bomb', remaining: bombsRemaining, cd: document.getElementById('cdBomb'), badge: document.getElementById('badgeBomb') },
     { btn: btnSupply, ability: 'supply', remaining: suppliesRemaining, cd: document.getElementById('cdSupply'), badge: document.getElementById('badgeSupply') },
     { btn: btnRadar, ability: 'radar', remaining: radarsRemaining, cd: document.getElementById('cdRadar'), badge: document.getElementById('badgeRadar') },
-    { btn: btnEmp, ability: 'emp', remaining: empsRemaining, cd: document.getElementById('cdEmp'), badge: document.getElementById('badgeEmp') }
+    { btn: btnEmp, ability: 'emp', remaining: empsRemaining, cd: document.getElementById('cdEmp'), badge: document.getElementById('badgeEmp') },
+    { btn: btnShoot, ability: 'shoot', remaining: shootsRemaining, cd: document.getElementById('cdShoot'), badge: document.getElementById('badgeShoot') }
   ];
 
   abilities.forEach(({ btn, ability, remaining, cd, badge }) => {
@@ -1497,7 +1509,7 @@ setInterval(() => {
   const info = abilityInfo[selectedAbility];
   const rem = getCooldownRemaining(selectedAbility);
   const remSec = Math.ceil(rem / 1000);
-  const left = selectedAbility === 'bomb' ? bombsRemaining : selectedAbility === 'supply' ? suppliesRemaining : selectedAbility === 'emp' ? empsRemaining : radarsRemaining;
+  const left = selectedAbility === 'bomb' ? bombsRemaining : selectedAbility === 'supply' ? suppliesRemaining : selectedAbility === 'emp' ? empsRemaining : selectedAbility === 'shoot' ? shootsRemaining : radarsRemaining;
 
   if (waveInfoEl) {
     const stateLabel = gameState === 'wave_active' ? 'In combat' :

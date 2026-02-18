@@ -7,6 +7,7 @@ signal supply_drop_requested_at_normalized(x: float, y: float)
 signal emp_drop_requested_at_normalized(x: float, y: float)
 signal radar_ping_requested()
 signal ping_requested_at_normalized(x: float, y: float)
+signal chopper_shoot_requested_at_normalized(x: float, y: float)
 signal connection_status_changed(connected: bool)
 
 @export var server_url: String = "wss://snakegamegodot-production.up.railway.app/ws"
@@ -21,7 +22,7 @@ var _reconnect_timer: float = 0.0
 var _reconnect_backoff: float = 2.0
 const RECONNECT_MAX: float = 30.0
 const MINIMAP_PROTOCOL_VERSION: int = 1
-const MINIMAP_KEYFRAME_SECONDS: float = 2.0
+const MINIMAP_KEYFRAME_SECONDS: float = 0.5
 const MINIMAP_QUANT_MAX: int = 1023
 
 var _minimap_seq: int = 0
@@ -68,7 +69,7 @@ func _parse_server_message(data: Dictionary) -> Dictionary:
 			if not _dict_has_only_keys(data, ["type", "code"]): return {}
 			if not (data.get("code") is String): return {}
 			return data
-		"bomb_drop", "supply_drop", "emp_drop", "ping_request":
+		"bomb_drop", "supply_drop", "emp_drop", "ping_request", "chopper_shoot":
 			if not _dict_has_only_keys(data, ["type", "x", "y"]): return {}
 			if not _num_in_range(data.get("x"), 0.0, 1.0) or not _num_in_range(data.get("y"), 0.0, 1.0): return {}
 			return { "type": t, "x": float(data.get("x")), "y": float(data.get("y")) }
@@ -173,6 +174,10 @@ func _process(delta: float):
 						var x = float(parsed.get("x", 0.5))
 						var y = float(parsed.get("y", 0.5))
 						ping_requested_at_normalized.emit(x, y)
+					"chopper_shoot":
+						var x = float(parsed.get("x", 0.5))
+						var y = float(parsed.get("y", 0.5))
+						chopper_shoot_requested_at_normalized.emit(x, y)
 					"chopper_input":
 						var ax = float(parsed.get("x", 0))
 						var ay = float(parsed.get("y", 0))

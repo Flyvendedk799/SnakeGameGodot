@@ -65,7 +65,7 @@ func _check_player_melee_hits():
 				game.particles.emit_directional(enemy.position.x, enemy.position.y, hit_dir, hit_colors[combo_idx], 5 + combo_idx * 2)
 				if is_crit:
 					# Phase 6: Route crit through FX bus
-					if game.fx_manager:
+					if game.get("fx_manager"):
 						game.fx_manager.emit_melee_crit({"position": enemy.position, "direction": hit_dir})
 					else:
 						game.particles.emit_burst(enemy.position.x, enemy.position.y, Color.YELLOW, 5)
@@ -93,7 +93,7 @@ func _check_player_melee_hits():
 			p.spawn_combo_visual(combo_idx, hit_pos)
 
 			# Phase 6: Route through Combat Visual Event Bus
-			if game.fx_manager:
+			if game.get("fx_manager"):
 				var payload = {
 					"position": hit_pos,
 					"direction": Vector2.from_angle(p.facing_angle),

@@ -1007,6 +1007,7 @@ func enable_companion_session() -> void:
 	companion_session.radar_ping_requested.connect(_on_companion_radar_ping)
 	companion_session.ping_requested_at_normalized.connect(_on_companion_ping)
 	companion_session.chopper_input_received.connect(_on_companion_chopper_input)
+	companion_session.chopper_shoot_requested_at_normalized.connect(_on_companion_chopper_shoot)
 	world_select._on_companion_session_ready()
 
 func disable_companion_session() -> void:
@@ -1446,3 +1447,12 @@ func _on_companion_ping(nx: float, ny: float):
 	companion_ping_pos = Vector2(nx * w, ny * h)
 	companion_ping_timer = 1.2
 	_add_companion_action("Companion: Look here!")
+func _on_companion_chopper_shoot(x: float, y: float):
+	if state != GameState.WAVE_ACTIVE or wave_complete_pending: return
+	var m = self.map
+	var wx = m.FORT_LEFT + x * (m.FORT_RIGHT - m.FORT_LEFT)
+	var wy = m.FORT_TOP + y * (m.FORT_BOTTOM - m.FORT_TOP)
+	var target_pos = Vector2(wx, wy)
+	if companion_helicopter and is_instance_valid(companion_helicopter):
+		companion_helicopter.fire_burst(target_pos)
+		_add_companion_action("Companion: Strafing run!")

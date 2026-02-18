@@ -91,6 +91,28 @@ func _explode():
 	if game.companion_session:
 		game._on_companion_bomb_landed(bomb_ground_pos, kills)
 
+func fire_burst(world_pos: Vector2) -> void:
+	## Chopper strafing burst: instant damage to enemies near world_pos.
+	## Does NOT interrupt patrol — fires from wherever the chopper is.
+	const BURST_RADIUS: float = 80.0
+	const BURST_DAMAGE: int = 25
+	var hits := 0
+	for enemy in game.enemy_container.get_children():
+		if enemy.state in [EnemyEntity.EnemyState.DEAD, EnemyEntity.EnemyState.DYING]:
+			continue
+		if world_pos.distance_to(enemy.position) <= BURST_RADIUS:
+			var falloff = 1.0 - (world_pos.distance_to(enemy.position) / BURST_RADIUS) * 0.4
+			var dmg = int(BURST_DAMAGE * falloff)
+			enemy.last_damager = game.player_node
+			enemy.take_damage(dmg, game)
+			hits += 1
+			game.spawn_damage_number(enemy.position, str(dmg), Color8(150, 220, 255))
+	if hits > 0:
+		game.particles.emit_burst(world_pos.x, world_pos.y, Color8(150, 220, 255), 10, 0.4)
+		game.start_shake(2.0, 0.08)
+	else:
+		game.particles.emit_burst(world_pos.x, world_pos.y, Color8(200, 200, 255), 5, 0.2)
+
 func _draw():
 	draw_circle(Vector2.ZERO, 18, Color.DARK_GRAY)
 	draw_circle(Vector2(-8, -12), 6, Color.GRAY)
