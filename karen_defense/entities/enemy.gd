@@ -201,28 +201,25 @@ func _state_approaching(delta, game):
 		return
 	last_dir = dir.normalized()
 
-	# Check for pit ahead before moving
-	var should_move = true
-	if is_on_ground and _is_pit_ahead(dir.normalized(), game):
-		# Stop at edge of pit - don't walk into certain death
-		should_move = false
-		velocity.x = 0
-
-	# Apply physics: horizontal movement + gravity
-	if should_move:
-		velocity.x = dir.normalized().x * move_speed
-	velocity.y += GRAVITY * delta
-
-	# Apply velocity
-	position += velocity * delta
-
-	# Collision detection (only in sideview mode)
 	if game.map and game.map.has_method("resolve_sideview_collision"):
+		# Sideview (platformer) mode: apply gravity + physics-based movement
+		var should_move = true
+		if is_on_ground and _is_pit_ahead(dir.normalized(), game):
+			should_move = false
+			velocity.x = 0
+		if should_move:
+			velocity.x = dir.normalized().x * move_speed
+		velocity.y += GRAVITY * delta
+		position += velocity * delta
 		var result = game.map.resolve_sideview_collision(position, velocity, entity_size, false)
 		position = result.position
 		velocity = result.velocity
-		# Check if on ground (vertical velocity stopped)
 		is_on_ground = absf(velocity.y) < 10.0 and result.velocity.y == 0
+	else:
+		# Top-down mode: simple 2D movement, no gravity
+		velocity = Vector2.ZERO
+		var desired_pos = position + dir.normalized() * move_speed * delta
+		position = game.map.resolve_collision(desired_pos, entity_size)
 
 func _state_attacking_barricade(_delta, game):
 	var barricade = game.map.get_barricade(target_entrance)
