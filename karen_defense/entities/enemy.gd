@@ -216,10 +216,11 @@ func _state_approaching(delta, game):
 		velocity = result.velocity
 		is_on_ground = absf(velocity.y) < 10.0 and result.velocity.y == 0
 	else:
-		# Top-down mode: simple 2D movement, no gravity
+		# Top-down mode: simple 2D movement, no gravity.
+		# Use resolve_collision_static (walls only) so enemies can still reach the barricade.
 		velocity = Vector2.ZERO
 		var desired_pos = position + dir.normalized() * move_speed * delta
-		position = game.map.resolve_collision(desired_pos, entity_size)
+		position = game.map.resolve_collision_static(desired_pos, entity_size)
 
 func _state_attacking_barricade(_delta, game):
 	var barricade = game.map.get_barricade(target_entrance)

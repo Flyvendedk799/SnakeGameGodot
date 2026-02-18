@@ -924,7 +924,7 @@ func _apply_wave_damage_scaling():
 		player2_node.melee_damage = maxi(player2_node.melee_damage, int(player2_node.melee_damage * mult))
 		player2_node.ranged_damage = maxi(player2_node.ranged_damage, int(player2_node.ranged_damage * mult))
 
-func spawn_damage_number(pos: Vector2, text: String, color: Color):
+func spawn_damage_number(pos: Vector2, text: String, color: Color, _bounce: bool = false):
 	if damage_numbers.size() >= 40:
 		damage_numbers.pop_front()
 	damage_numbers.append({
