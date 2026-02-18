@@ -5,7 +5,9 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
   <meta name="description" content="Karen Defense Companion Mode - Support your team with tactical abilities">
   <title>Karen Defense Companion</title>
+  <link rel="manifest" href="manifest.json">
   <link rel="stylesheet" href="style.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 </head>
 <body role="application" aria-label="Karen Defense Companion Application">
   <!-- Error Toast -->
@@ -25,14 +27,21 @@
     <button id="start" aria-label="Start as companion player">Start as Companion</button>
   </div>
   <div id="waiting" class="hidden" role="main">
-    <p>Share this code:</p>
-    <p id="code" aria-label="Session code" role="status"></p>
+    <p>Share this code with the game:</p>
+    <div id="qrContainer" class="qr-container" aria-hidden="true"></div>
+    <p id="code" class="code-display" aria-label="Session code" role="status"></p>
     <button id="copy" aria-label="Copy session code to clipboard">Copy</button>
     <p id="status" role="status" aria-live="polite">Waiting for game...</p>
     <button id="reconnect" class="hidden" aria-label="Reconnect to session">Reconnect</button>
+    <button id="createNewSession" class="hidden" aria-label="Create new session">Create new session</button>
   </div>
   <div id="connected" class="hidden" role="main">
     <p id="connStatus" role="status" aria-live="polite"><span class="status-dot online"></span> Connected</p>
+    <p id="sessionCodeBar" class="session-code-bar" role="status" aria-live="polite"></p>
+    <div id="comboBar" class="combo-bar" role="status" aria-live="polite">
+      <div class="combo-bar-fill" id="comboBarFill"></div>
+      <span class="combo-bar-label" id="comboBarLabel">Combo Lv0</span>
+    </div>
     <p id="waveInfo" style="margin: 0.25rem 0; font-size: 0.95rem;" role="status" aria-live="polite"></p>
     <div id="abilityRow" role="group" aria-label="Companion abilities">
       <button id="btnBomb" class="ability-btn selected" data-ability="bomb" aria-label="Bomb ability: Drop explosive on enemies. 2 per wave, 30 second cooldown" tabindex="0">

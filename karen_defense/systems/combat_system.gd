@@ -64,26 +64,22 @@ func _check_player_melee_hits():
 				var hit_colors = [Color.WHITE, Color8(100, 200, 255), Color8(255, 120, 50)]
 				game.particles.emit_directional(enemy.position.x, enemy.position.y, hit_dir, hit_colors[combo_idx], 5 + combo_idx * 2)
 				if is_crit:
-					game.particles.emit_burst(enemy.position.x, enemy.position.y, Color.YELLOW, 5)
-					# AAA Upgrade: Yellow impact ring for crits
+					# Phase 6: Route crit through FX bus
+					if game.fx_manager:
+						game.fx_manager.emit_melee_crit({"position": enemy.position, "direction": hit_dir})
+					else:
+						game.particles.emit_burst(enemy.position.x, enemy.position.y, Color.YELLOW, 5)
 					p.spawn_impact_ring(enemy.position - p.position, 40.0, Color(1.0, 1.0, 0.0, 0.8), 3.5)
 				enemy.last_damager = p
 				enemy.take_damage(dmg, game)
 				var dmg_col = Color.YELLOW if is_crit else [Color.WHITE, Color8(100, 200, 255), Color8(255, 120, 50)][combo_idx]
-				# AAA Upgrade: Use bounce physics for combo hits 2 and 3
 				var use_bounce = combo_idx >= 1
 				game.spawn_damage_number(enemy.position, str(dmg) + ("!" if is_crit else ""), dmg_col, use_bounce)
 
-				# AAA Upgrade: Impact flash for combo hits 2 and 3
-				if combo_idx >= 1:
-					var flash_color = Color.WHITE if combo_idx == 1 else Color8(255, 120, 50)
-					game.spawn_impact_flash(enemy.position, 0.15, flash_color)
-
-				# AAA Upgrade: Combo multiplier display
-				if combo_idx > 0 and hits == 1:  # Show once per swing
+				# Combo multiplier display
+				if combo_idx > 0 and hits == 1:
 					var combo_text = "x%d" % (combo_idx + 1)
-					var combo_color = Color(1.0, 0.8, 0.0)  # Gold
-					game.spawn_damage_number(enemy.position + Vector2(0, -30), combo_text, combo_color, false)
+					game.spawn_damage_number(enemy.position + Vector2(0, -30), combo_text, Color(1.0, 0.8, 0.0), false)
 
 				hits += 1
 				if game.sfx:
@@ -93,19 +89,30 @@ func _check_player_melee_hits():
 			p.last_hit_landed_time = 0.0
 
 			# AAA Upgrade: Spawn combo visual trail
-			p.spawn_combo_visual(combo_idx, p.position + Vector2.from_angle(p.facing_angle) * p.melee_range * 0.7)
+			var hit_pos = p.position + Vector2.from_angle(p.facing_angle) * p.melee_range * 0.7
+			p.spawn_combo_visual(combo_idx, hit_pos)
 
-			# Stronger shake for later combo hits
-			game.start_shake(3.0 + combo_idx * 2.0, 0.08 + combo_idx * 0.04)
-			# AAA Upgrade: Enhanced hitstop using combo config values (reduced for smoother feel)
-			var hitstop_duration = combo_cfg.get("hitstop", 0.02)  # Default to 0.02 if not present
-			game.start_hitstop(hitstop_duration, 1.0)  # Consistent intensity for smooth gameplay
-
-			# CARTOON: Big combat zoom on combo finisher
-			if combo_idx == 2:
-				p.spawn_impact_ring(Vector2.ZERO, 65.0, Color(1.0, 0.3, 0.1, 0.95), 5.0)
-				if game.has_method("trigger_camera_zoom_pulse"):
-					game.trigger_camera_zoom_pulse(2.8)
+			# Phase 6: Route through Combat Visual Event Bus
+			if game.fx_manager:
+				var payload = {
+					"position": hit_pos,
+					"direction": Vector2.from_angle(p.facing_angle),
+					"combo_index": combo_idx,
+					"intensity": 1.0 + combo_idx * 0.4,
+				}
+				game.fx_manager.emit_melee_hit(payload)
+				if combo_idx == 2:
+					game.fx_manager.emit_combo_finisher(payload)
+					p.spawn_impact_ring(Vector2.ZERO, 65.0, Color(1.0, 0.3, 0.1, 0.95), 5.0)
+			else:
+				# Fallback: legacy direct calls
+				game.start_shake(3.0 + combo_idx * 2.0, 0.08 + combo_idx * 0.04)
+				var hitstop_duration = combo_cfg.get("hitstop", 0.02)
+				game.start_hitstop(hitstop_duration, 1.0)
+				if combo_idx == 2:
+					p.spawn_impact_ring(Vector2.ZERO, 65.0, Color(1.0, 0.3, 0.1, 0.95), 5.0)
+					if game.has_method("trigger_camera_zoom_pulse"):
+						game.trigger_camera_zoom_pulse(2.8)
 
 			# Lifesteal on melee
 			if p.lifesteal > 0 and p.current_hp < p.max_hp:

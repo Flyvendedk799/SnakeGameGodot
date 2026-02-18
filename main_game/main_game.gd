@@ -15,7 +15,7 @@ var state: GameState = GameState.LEVEL_ACTIVE
 var previous_state: GameState = GameState.LEVEL_ACTIVE
 
 var map: LinearMap
-var parallax_backdrop: ParallaxBackdrop = null
+var parallax_backdrop: ParallaxBackdropV2 = null
 var player_node: PlayerEntity
 var ally_container: Node2D
 var enemy_container: Node2D
@@ -42,7 +42,34 @@ var game_over_screen: GameOverScreen
 
 var sfx: KarenSfxPlayer
 var fx_manager: FXManager  # AAA Upgrade: Unified FX coordinator
-var post_process: PostProcessSimple = null  # AAA Visual Overhaul: GPU shader pipeline
+var weapon_trail_manager: WeaponTrailManager = null  # Phase 1.2: GPU ribbon trails
+var occlusion_manager: OcclusionManager = null  # Phase 3: Depth occlusion silhouettes
+var hit_flash_light: PointLight2D = null  # Phase 4.2: Single shared hit-impact light
+var hit_flash_light_energy: float = 0.0   # Current energy (decays each frame)
+var post_process: PostProcessLayer = null  # Phase 1.3: Full multi-pass GPU shader pipeline
+var post_process_pipeline: PostProcessPipeline = null  # Phase 1.1: Multi-pass orchestration
+var quality_manager: QualityManager = null             # Phase 1.3: Quality tier switching
+var music_controller: MusicController = null           # Phase 7.1: Dynamic music stems
+var audio_manager: AudioManager = null                 # Phase 7.2: Spatial SFX
+var debug_overlay: DebugOverlay = null                 # Phase 8.4: Debug HUD (debug builds only)
+var streaming_loader: StreamingLoader = null           # Phase 8.2: Asset streaming
+var weather_system: WeatherSystem = null               # Phase 2.3: Weather & ambient particles
+var gpu_particle_emitter: GPUParticleEmitter = null    # Phase 4.2: GPU burst/death particles
+var atmospheric_fog_layer: CanvasLayer = null          # Phase 2.2: Depth atmospheric fog
+var atmospheric_fog_mat: ShaderMaterial = null
+
+# Phase 5.2: Biome transition tracking
+var _last_biome_x_check: float = -1.0
+var _current_segment_theme: String = ""
+
+# Phase 8.1: Delta smoothing for frame pacing
+var _smoothed_delta: float = 0.016
+const DELTA_SMOOTH_FACTOR: float = 0.2
+
+# Accessibility settings (Phase 8.3)
+var accessibility_reduce_motion: bool = false  # Reduces shake, no speed lines, no hitStop shake
+var accessibility_colorblind_mode: String = ""  # "deuteranopia" | "protanopia" | "" (normal)
+
 var particles: ParticleSystem
 var game_camera: Camera2D = null
 var camera_base_zoom: float = 1.0
@@ -106,9 +133,21 @@ var establishing_shot_timer: float = 0.0
 var establishing_shot_from: Vector2 = Vector2.ZERO
 var establishing_shot_to: Vector2 = Vector2.ZERO
 const ESTABLISHING_SHOT_DURATION: float = 1.2
+# Phase 6.2: Intro cinematic zoom (1.05 → 1.0 over 0.85s) + level name card
+var _intro_zoom: float = 1.0        # Extra factor applied on top of base zoom during intro
+var _intro_zoom_timer: float = 0.0
+const _INTRO_ZOOM_DURATION: float = 0.85
+const _INTRO_ZOOM_START: float = 1.05
+var _level_name_card_timer: float = 0.0
+const _LEVEL_NAME_CARD_DURATION: float = 3.5
+var _level_name_canvas: CanvasLayer = null
 # Camera overshoot spring
 var camera_overshoot: Vector2 = Vector2.ZERO
 var camera_overshoot_velocity: Vector2 = Vector2.ZERO
+# Camera breathing (subtle idle oscillation for cinematic life)
+var _camera_breath_phase: float = 0.0
+const CAMERA_BREATH_SPEED: float = 0.28  # ~0.28 Hz — very slow, barely perceptible
+const CAMERA_BREATH_AMP: float = 1.8     # pixels at full idle
 
 var current_level_id: int = 1
 var current_map_id: int = 1  # Alias for game_over_screen compatibility
@@ -137,7 +176,7 @@ func _build_scene_tree():
 	game_layer.name = "GameLayer"
 	add_child(game_layer)
 
-	parallax_backdrop = ParallaxBackdrop.new()
+	parallax_backdrop = ParallaxBackdropV2.new()
 	parallax_backdrop.name = "ParallaxBackdrop"
 	game_layer.add_child(parallax_backdrop)
 
@@ -224,6 +263,31 @@ func _build_scene_tree():
 	add_child(fx_manager)
 	fx_manager.setup(self)
 
+	# Phase 1.2: Weapon trail manager for GPU ribbon combo trails
+	weapon_trail_manager = WeaponTrailManager.new()
+	weapon_trail_manager.name = "WeaponTrailManager"
+	weapon_trail_manager.setup(self)
+	add_child(weapon_trail_manager)
+
+	# Phase 3: Occlusion manager for depth silhouettes
+	occlusion_manager = OcclusionManager.new()
+	occlusion_manager.name = "OcclusionManager"
+	occlusion_manager.setup(self)
+	add_child(occlusion_manager)
+
+	# Phase 4.2: Single shared hit-flash light (moved per hit, energy decays)
+	hit_flash_light = PointLight2D.new()
+	hit_flash_light.name = "HitFlashLight"
+	hit_flash_light.color = Color(1.0, 0.9, 0.8)
+	hit_flash_light.energy = 0.0
+	hit_flash_light.texture_scale = 1.2
+	hit_flash_light.range_layer_min = -1024
+	hit_flash_light.range_layer_max = 1024
+	var _lft = _make_radial_light_texture(96)
+	if _lft:
+		hit_flash_light.texture = _lft
+	entity_layer.add_child(hit_flash_light)
+
 	var ui_layer = CanvasLayer.new()
 	ui_layer.name = "UILayer"
 	ui_layer.layer = 10
@@ -258,11 +322,52 @@ func _build_scene_tree():
 	fx_draw_node.game = self
 	fx_layer.add_child(fx_draw_node)
 
-	# AAA Visual Overhaul: GPU post-processing shader pipeline
-	post_process = PostProcessSimple.new()
+	# Phase 1.3: Full multi-pass GPU post-processing pipeline (cel, bloom, distort, tonemap)
+	post_process = PostProcessLayer.new()
 	post_process.name = "PostProcess"
 	add_child(post_process)
 	post_process.setup(self)
+
+	# Phase 1.1: Multi-pass pipeline orchestration
+	post_process_pipeline = PostProcessPipeline.new()
+	post_process_pipeline.name = "PostProcessPipeline"
+	add_child(post_process_pipeline)
+	post_process_pipeline.setup(self)
+
+	# Phase 1.3: Quality tier manager
+	quality_manager = QualityManager.new()
+	quality_manager.name = "QualityManager"
+	add_child(quality_manager)
+	quality_manager.setup(self)
+
+	# Phase 7.1: Dynamic music controller
+	music_controller = MusicController.new()
+	music_controller.name = "MusicController"
+	add_child(music_controller)
+	music_controller.setup(self)
+
+	# Phase 7.2: Spatial audio manager
+	audio_manager = AudioManager.new()
+	audio_manager.name = "AudioManager"
+	add_child(audio_manager)
+	audio_manager.setup(self)
+
+	# Phase 8.4: Debug overlay (debug builds only)
+	debug_overlay = DebugOverlay.new()
+	debug_overlay.name = "DebugOverlay"
+	add_child(debug_overlay)
+	debug_overlay.setup(self)
+
+	# Phase 8.2: Streaming loader
+	streaming_loader = StreamingLoader.new()
+	streaming_loader.name = "StreamingLoader"
+	add_child(streaming_loader)
+
+	# Phase 4.2: GPU burst/death particle emitter
+	gpu_particle_emitter = GPUParticleEmitter.new()
+	gpu_particle_emitter.name = "GPUParticleEmitter"
+	add_child(gpu_particle_emitter)
+	gpu_particle_emitter.setup(self)
 
 	# ParticleSystem is RefCounted, not Node - used via particles.update() and particles.draw()
 
@@ -300,12 +405,43 @@ func _setup_systems():
 				temp.queue_free()
 	if not used_custom:
 		map.setup(self, current_level_id)
+	var _theme = map.level_config.get("theme", "grass")
 	if parallax_backdrop:
-		var theme = map.level_config.get("theme", "grass")
-		parallax_backdrop.setup(self, theme, map.level_width, map.level_height)
+		parallax_backdrop.setup(self, _theme, map.level_width, map.level_height)
 	# AAA Visual Overhaul: Set post-process theme
 	if post_process:
-		post_process.set_theme(map.level_config.get("theme", "grass"))
+		post_process.set_theme(_theme)
+	# Phase 1.1: Set LUT theme in pipeline
+	if post_process_pipeline:
+		post_process_pipeline.set_theme_lut(_theme)
+	# Phase 7.1: Start dynamic music for theme
+	if music_controller:
+		music_controller.set_theme(_theme)
+	# Phase 7.2: Set up ambient sources for theme
+	if audio_manager:
+		audio_manager.setup_ambient_sources(_theme, map.level_width)
+	# Phase 2.3: Set up weather system (with per-level intensity from config)
+	var _weather_intensity = float(map.level_config.get("weather_intensity", 1.0))
+	weather_system = WeatherSystem.new()
+	weather_system.name = "WeatherSystem"
+	game_layer.add_child(weather_system)
+	weather_system.setup(self, _theme, _weather_intensity)
+
+	# Phase 2.2: Atmospheric fog layer
+	_setup_atmospheric_fog(_theme, map.level_config.get("fog_preset", ""))
+
+	# Phase 3.4: Apply per-level time_of_day to parallax + weather
+	var _tod = float(map.level_config.get("time_of_day", 0.5))
+	if parallax_backdrop:
+		parallax_backdrop.set_time_of_day(_tod)
+	if weather_system:
+		weather_system.set_time_of_day(_tod)
+
+	# Phase 5.2: Initialize biome tracking
+	_current_segment_theme = _theme
+	# Phase 8.2: Start streaming loader
+	if streaming_loader:
+		streaming_loader.setup(self)
 	economy.configure_for_map(map.level_config)
 	game_camera.position = map.get_player_anchor()
 	spawn_director.setup(self)
@@ -415,6 +551,14 @@ func _update_visibility():
 	shop_menu.visible = shop_menu.active
 
 func _process(delta):
+	# Phase 8.1: Delta smoothing — prevents camera jumpiness from frame spikes
+	_smoothed_delta = lerpf(_smoothed_delta, delta, DELTA_SMOOTH_FACTOR)
+	var smooth_delta = _smoothed_delta
+	# Flag if process time is too high (> 14ms)
+	var pt_ms = Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0
+	if pt_ms > 14.0 and OS.is_debug_build():
+		pass  # Could log but avoid console spam
+
 	if hitstop_timer > 0:
 		var real_delta = delta / maxf(Engine.time_scale, 0.01)
 		hitstop_timer -= real_delta
@@ -443,6 +587,8 @@ func _process(delta):
 			return
 
 	_update_shake(delta)
+	# Phase 6.2: Tick level name card fade
+	_update_level_name_card(delta)
 
 	# Camera zoom pulse spring physics (AAA upgrade)
 	if absf(camera_zoom_pulse) > 0.001:
@@ -456,6 +602,12 @@ func _process(delta):
 
 	if chromatic_intensity > 0.05:
 		chromatic_intensity = lerpf(chromatic_intensity, 0.0, delta * 8.0)
+	# Phase 4.2: Decay shared hit-flash light
+	if hit_flash_light and hit_flash_light_energy > 0.01:
+		hit_flash_light_energy = lerpf(hit_flash_light_energy, 0.0, delta * 7.0)
+		hit_flash_light.energy = hit_flash_light_energy
+	elif hit_flash_light and hit_flash_light.energy > 0.0:
+		hit_flash_light.energy = 0.0
 	# AAA Upgrade: Decay bloom intensity
 	if fx_draw_node and fx_draw_node.bloom_intensity > 0.05:
 		fx_draw_node.bloom_intensity = lerpf(fx_draw_node.bloom_intensity, 0.0, delta * 4.0)
@@ -481,6 +633,12 @@ func _process(delta):
 			_debug_camera_timer = 0.0
 			_log_camera_snapshot(delta)
 	map.anim_time += delta
+	# Phase 2.1: Update player position for grass bend
+	if map and player_node:
+		map._player_pos = player_node.position
+	# Phase 2.3 / Phase 5: Update animated terrain effects
+	if map and map.has_method("update_effects"):
+		map.update_effects(delta)
 	if map:
 		map.queue_redraw()
 	if fx_draw_node:
@@ -490,6 +648,10 @@ func _process(delta):
 	if _redraw_accum >= REDRAW_INTERVAL:
 		_redraw_accum = 0.0
 		queue_redraw()
+
+	# Phase 1.1: Update post-process pipeline (LUT, bloom params, exposure)
+	if post_process_pipeline:
+		post_process_pipeline.update(delta)
 
 func _process_level_active(delta):
 	time_elapsed += delta
@@ -502,6 +664,12 @@ func _process_level_active(delta):
 
 	if not player_node.is_dead:
 		player_node.update_player(delta, self)
+	# Speed lines: connect GPU post-process speed lines to dash and sprint
+	if post_process and not player_node.is_dead:
+		if player_node.is_dashing:
+			post_process.trigger_speed_lines(0.85)
+		elif player_node.get("is_sprinting") and player_node.is_sprinting and absf(player_node.velocity.x) > 240.0:
+			post_process.trigger_speed_lines(0.32)
 	if p2_joined and player2_node and not player2_node.is_dead:
 		player2_node.update_player(delta, self)
 
@@ -539,12 +707,29 @@ func _process_level_active(delta):
 
 	combat_system.resolve_frame(delta)
 	particles.update(delta)
+	if weapon_trail_manager:
+		weapon_trail_manager.update(delta)
+	if occlusion_manager:
+		occlusion_manager.update(delta)
 	_update_damage_numbers(delta)
 	_update_impact_flashes(delta)
 
 	checkpoint_manager.update(delta)
 	spawn_director.update(delta)
 	total_gold_earned = economy.p1_gold + economy.p2_gold
+
+	# Phase 2.3: Propagate time_of_day from parallax to weather (sun-driven light shafts)
+	if weather_system and parallax_backdrop:
+		var tod = parallax_backdrop.get("time_of_day") if parallax_backdrop.get("time_of_day") != null else 0.5
+		weather_system.set_time_of_day(tod)
+
+	# Phase 5.2: Biome transition check
+	if player_node and not player_node.is_dead:
+		var px = player_node.position.x
+		# Only check every 40px of travel to avoid per-frame cost
+		if absf(px - _last_biome_x_check) >= 40.0:
+			_last_biome_x_check = px
+			_check_biome_transitions(px)
 
 	if map.is_in_goal(player_node.position) or (p2_joined and player2_node and map.is_in_goal(player2_node.position)):
 		_on_level_complete()
@@ -608,7 +793,7 @@ func _update_linear_camera(delta: float):
 
 		# AAA Upgrade: Combat-aware framing - include nearest enemies
 		var combat_frame = Vector2.ZERO
-		if anchor.is_attacking_melee or anchor.is_dashing:
+		if anchor.is_dashing:
 			var nearest_enemy = _get_nearest_enemy_in_range(anchor.position, 200.0)
 			if nearest_enemy:
 				var to_enemy = nearest_enemy.position - anchor.position
@@ -636,9 +821,9 @@ func _update_linear_camera(delta: float):
 		_camera_target_smooth = target
 		_camera_smooth_ready = true
 	else:
-		# Smoothstep for more cinematic easing
-		var smooth_x = smoothstep(0.0, 1.0, SMOOTH_X)
-		var smooth_y = smoothstep(0.0, 1.0, SMOOTH_Y)
+		# Delta-corrected exponential smoothing — frame-rate independent
+		var smooth_x = 1.0 - exp(-delta * 6.0)
+		var smooth_y = 1.0 - exp(-delta * 4.5)
 		_camera_target_smooth.x = lerpf(_camera_target_smooth.x, target.x, smooth_x)
 		_camera_target_smooth.y = lerpf(_camera_target_smooth.y, target.y, smooth_y)
 
@@ -650,19 +835,25 @@ func _update_linear_camera(delta: float):
 		# Zoom out when sprinting for speed emphasis
 		if p1.is_sprinting and absf(p1.velocity.x) > 200:
 			action_zoom += 0.08
-		# Zoom in during combat - MORE aggressive on combo finisher (hit 3)
-		elif p1.is_attacking_melee:
-			var combo_idx = p1.combo_index if p1.get("combo_index") != null else 0
-			if combo_idx == 2:  # Finisher hit
-				action_zoom -= 0.08  # Aggressive zoom-in
-			else:
-				action_zoom -= 0.03
 		# Zoom out during ground pound fall
 		elif p1.get("is_ground_pounding") and p1.is_ground_pounding:
 			action_zoom += 0.12
 		# Zoom out slightly when airborne for spatial awareness
 		elif not p1.is_on_ground and absf(p1.velocity.y) > 200:
 			action_zoom += 0.04
+
+	# Phase 6.4: Boss frame — pull back 1.2x and center between player and boss
+	var boss_node = _get_active_boss()
+	if boss_node and p1 and not p1.is_dead:
+		var boss_to_player_mid = (p1.position + boss_node.position) * 0.5
+		target = target.lerp(boss_to_player_mid, 0.4)
+		action_zoom += 0.2  # Pull back for boss fight
+
+	# Phase 6.4: Danger framing — 4+ nearby enemies → slight zoom out
+	var nearby_enemy_count = _count_nearby_enemies(p1.position if p1 else Vector2.ZERO, 250.0)
+	if nearby_enemy_count >= 4:
+		var danger_zoom = clampf((nearby_enemy_count - 3) * 0.015, 0.0, 0.05)
+		action_zoom += danger_zoom
 
 	# Apply zoom pulse and action zoom to zoom target
 	var pulse_zoom = Vector2(1.0 + camera_zoom_pulse, 1.0 + camera_zoom_pulse)
@@ -694,12 +885,28 @@ func _update_linear_camera(delta: float):
 	if camera_overshoot.length() < 0.5:
 		camera_overshoot = Vector2.ZERO
 
-	game_camera.position = Vector2(new_x, new_y) + camera_overshoot
+	# Camera breathing: gentle idle oscillation fades out as player moves
+	_camera_breath_phase = fmod(_camera_breath_phase + delta * CAMERA_BREATH_SPEED * TAU, TAU)
+	var p1_speed = p1.velocity.length() if p1 and not p1.is_dead else 0.0
+	var breath_scale = 1.0 - clampf(p1_speed / 180.0, 0.0, 1.0)
+	var breath_x = sin(_camera_breath_phase) * CAMERA_BREATH_AMP * 0.4 * breath_scale
+	var breath_y = sin(_camera_breath_phase * 0.71 + 1.27) * CAMERA_BREATH_AMP * breath_scale
+	game_camera.position = Vector2(new_x + breath_x, new_y + breath_y) + camera_overshoot
 
 	# Store for debug snapshot
 	_debug_cam_target = target
 	_debug_cam_smooth = _camera_target_smooth
 	_debug_cam_effective = effective_target
+
+	# Phase 6.2: Decay intro zoom smoothly (1.05 → 1.0)
+	if _intro_zoom_timer > 0.0:
+		_intro_zoom_timer -= delta
+		var t = clampf(1.0 - _intro_zoom_timer / _INTRO_ZOOM_DURATION, 0.0, 1.0)
+		_intro_zoom = lerpf(_INTRO_ZOOM_START, 1.0, t * t)  # Ease-in decay
+	else:
+		_intro_zoom = 1.0
+	# Fold intro zoom into the zoom target
+	zoom_target *= Vector2(_intro_zoom, _intro_zoom)
 
 	# Zoom with spring ease (use safe_delta to avoid jerk during frame drops)
 	var zoom_ease = ease_out_spring(safe_delta * 5.0)
@@ -719,6 +926,23 @@ func _update_linear_camera(delta: float):
 	camera_tilt_velocity *= exp(-15.0 * delta)  # Dampening
 	camera_tilt += camera_tilt_velocity * delta
 	game_camera.rotation = camera_tilt
+
+func _get_active_boss():
+	"""Phase 6.4: Find active boss entity for camera framing."""
+	for enemy in enemy_container.get_children():
+		if enemy.get("is_boss") and enemy.is_boss and enemy.state != EnemyEntity.EnemyState.DEAD and enemy.state != EnemyEntity.EnemyState.DYING:
+			return enemy
+	return null
+
+func _count_nearby_enemies(from_pos: Vector2, radius: float) -> int:
+	"""Phase 6.4: Count live enemies within radius for danger framing."""
+	var count = 0
+	for enemy in enemy_container.get_children():
+		if enemy.state == EnemyEntity.EnemyState.DEAD or enemy.state == EnemyEntity.EnemyState.DYING:
+			continue
+		if from_pos.distance_to(enemy.position) <= radius:
+			count += 1
+	return count
 
 func _get_nearest_enemy_in_range(from_pos: Vector2, max_range: float):
 	"""AAA Upgrade: Find nearest enemy for combat-aware camera framing."""
@@ -849,6 +1073,8 @@ func spawn_impact_flash(pos: Vector2, duration: float = 0.15, color: Color = Col
 		"radius_start": 10.0,
 		"radius_end": 40.0,
 	})
+	# Phase 4.2: Activate shared hit-flash light at impact position
+	trigger_hit_light(pos, 1.0)
 
 func start_shake(intensity: float, duration: float, curve: ShakeCurve = ShakeCurve.EASE_OUT_QUAD):
 	"""AAA Upgrade: Enhanced screen shake with decay curves."""
@@ -880,6 +1106,79 @@ func trigger_bloom_boost(intensity: float = 0.5):
 	if post_process:
 		post_process.trigger_bloom_boost(intensity)
 
+## Phase 2.2: Set up atmospheric fog CanvasLayer
+func _setup_atmospheric_fog(theme: String, fog_preset: String):
+	"""Create fullscreen depth fog pass below post-process."""
+	var shader_path = "res://assets/shaders/atmospheric_fog.gdshader"
+	if not ResourceLoader.exists(shader_path):
+		return
+	var shader = load(shader_path) as Shader
+	if shader == null:
+		return
+
+	# Determine fog params from preset or theme default
+	var fog_params: Dictionary
+	if not fog_preset.is_empty() and LUTGenerator.FOG_PRESETS.has(fog_preset):
+		fog_params = LUTGenerator.FOG_PRESETS[fog_preset]
+	else:
+		# Theme defaults
+		match theme:
+			"cave":   fog_params = LUTGenerator.FOG_PRESETS["dense"]
+			"lava":   fog_params = LUTGenerator.FOG_PRESETS["lava"]
+			"sky":    fog_params = LUTGenerator.FOG_PRESETS["sky"]
+			"ice":    fog_params = LUTGenerator.FOG_PRESETS["snow"]
+			"summit": fog_params = LUTGenerator.FOG_PRESETS["light"]
+			_:        fog_params = LUTGenerator.FOG_PRESETS["light"]
+
+	if fog_params.get("density", 0.0) < 0.01:
+		return  # Skip near-zero fog
+
+	atmospheric_fog_mat = ShaderMaterial.new()
+	atmospheric_fog_mat.shader = shader
+	atmospheric_fog_mat.set_shader_parameter("fog_color",    fog_params.get("color", Color(0.05,0.08,0.14,0.85)))
+	atmospheric_fog_mat.set_shader_parameter("fog_density",  fog_params.get("density", 0.15))
+	atmospheric_fog_mat.set_shader_parameter("fog_start_y",  fog_params.get("start_y", 0.35))
+	atmospheric_fog_mat.set_shader_parameter("fog_end_y",    fog_params.get("end_y", 0.95))
+	atmospheric_fog_mat.set_shader_parameter("fog_top_haze", fog_params.get("top_haze", 0.0))
+	atmospheric_fog_mat.set_shader_parameter("time_driven",  1.0 if theme == "cave" or theme == "lava" else 0.3)
+
+	var fog_rect = ColorRect.new()
+	fog_rect.set_anchors_preset(Control.PRESET_FULL_RECT)
+	fog_rect.material = atmospheric_fog_mat
+	fog_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	fog_rect.color = Color.TRANSPARENT
+
+	atmospheric_fog_layer = CanvasLayer.new()
+	atmospheric_fog_layer.name = "AtmosphericFog"
+	atmospheric_fog_layer.layer = 9   # Above weather (8), below FX (15)
+	atmospheric_fog_layer.add_child(fog_rect)
+	add_child(atmospheric_fog_layer)
+
+## Phase 5.2: Check segment_theme_overrides for biome transitions
+func _check_biome_transitions(player_x: float):
+	"""Switch parallax and post-process theme when player crosses x_min threshold."""
+	if map == null:
+		return
+	var overrides: Array = map.level_config.get("segment_theme_overrides", [])
+	if overrides.is_empty():
+		return
+
+	# Find the most recent override that applies (largest x_min <= player_x)
+	var new_theme = map.level_config.get("theme", "grass")
+	for override in overrides:
+		var x_min = float(override.get("x_min", 0))
+		if player_x >= x_min:
+			new_theme = str(override.get("theme", new_theme))
+
+	if new_theme != _current_segment_theme:
+		_current_segment_theme = new_theme
+		if parallax_backdrop and parallax_backdrop.has_method("crossfade_to_theme"):
+			parallax_backdrop.crossfade_to_theme(new_theme, 1.5)
+		if post_process:
+			post_process.set_theme(new_theme)
+		if post_process_pipeline:
+			post_process_pipeline.set_theme_lut(new_theme)
+
 func _start_establishing_shot():
 	"""AAA Visual Overhaul: Brief camera pan from offset to player on level load."""
 	if not player_node or not game_camera:
@@ -890,6 +1189,67 @@ func _start_establishing_shot():
 	# Start camera offset to the right (show ahead of player)
 	establishing_shot_from = player_node.position + Vector2(300, -80)
 	game_camera.position = establishing_shot_from
+
+	# Phase 6.2: Intro cinematic zoom 1.05 → 1.0
+	_intro_zoom = _INTRO_ZOOM_START
+	_intro_zoom_timer = _INTRO_ZOOM_DURATION
+	# Scale camera zoom immediately for a subtle zoom-in at level start
+	game_camera.zoom = Vector2(camera_base_zoom * _intro_zoom, camera_base_zoom * _intro_zoom)
+
+	# Phase 6.2: Level name card — create fullscreen overlay canvas on demand
+	_level_name_card_timer = _LEVEL_NAME_CARD_DURATION
+	_show_level_name_card()
+
+func _show_level_name_card():
+	"""Phase 6.2: Create/update the level name card overlay on a dedicated CanvasLayer."""
+	# Build canvas lazily
+	if _level_name_canvas == null:
+		_level_name_canvas = CanvasLayer.new()
+		_level_name_canvas.name = "LevelNameCard"
+		_level_name_canvas.layer = 15  # Above HUD (10) and post-process (8-9)
+		add_child(_level_name_canvas)
+	# Clear previous children
+	for c in _level_name_canvas.get_children():
+		c.queue_free()
+
+	var level_name: String = map.level_config.get("name", "")
+	if level_name.is_empty():
+		return
+
+	var level_num: int = map.level_config.get("id", current_level_id)
+	var theme: String = map.level_config.get("theme", "grass")
+
+	# Theme-based accent color for the name card
+	var THEME_ACCENT = {
+		"grass":   Color8(120, 200, 80),
+		"cave":    Color8(140, 120, 200),
+		"sky":     Color8(100, 180, 240),
+		"summit":  Color8(200, 210, 225),
+		"lava":    Color8(220, 90, 40),
+		"ice":     Color8(160, 210, 240),
+	}
+	var accent = THEME_ACCENT.get(theme, Color8(200, 200, 200))
+
+	# Name card container — FX node that draws the card
+	var card = LevelNameCard.new(level_name, level_num, accent, _LEVEL_NAME_CARD_DURATION)
+	card.name = "CardDrawNode"
+	_level_name_canvas.add_child(card)
+
+func _update_level_name_card(delta: float):
+	"""Phase 6.2: Tick the name card alpha fade."""
+	if _level_name_card_timer <= 0.0:
+		# Hide canvas once done
+		if _level_name_canvas:
+			_level_name_canvas.visible = false
+		return
+	_level_name_card_timer -= delta
+	if _level_name_canvas:
+		_level_name_canvas.visible = true
+		# Forward timer to the card draw node
+		var card = _level_name_canvas.get_node_or_null("CardDrawNode")
+		if card and card.has_method("set_time"):
+			card.set_time(_level_name_card_timer)
+			card.queue_redraw()
 
 func _update_shake(delta):
 	if shake_timer > 0:
@@ -909,6 +1269,8 @@ func _update_shake(delta):
 		var ci = shake_intensity * progress
 		shake_offset = Vector2(randf_range(-ci, ci), randf_range(-ci, ci))
 		game_layer.position = shake_offset
+		# Cinematic shake rotation: adds physical weight to impacts
+		game_camera.rotation += randf_range(-ci, ci) * 0.0025
 	else:
 		shake_offset = Vector2.ZERO
 		game_layer.position = Vector2.ZERO
@@ -1010,8 +1372,60 @@ func _spawn_player2():
 func restart_level():
 	get_tree().reload_current_scene()
 
+# ---------------------------------------------------------------------------
+# Phase 8.3: Accessibility API
+# ---------------------------------------------------------------------------
+
+func set_reduce_motion(enabled: bool):
+	"""Phase 8.3: Toggle reduced motion — 30% shake, 50% hitstop, no speed lines."""
+	accessibility_reduce_motion = enabled
+	if post_process:
+		if enabled:
+			post_process.trigger_speed_lines(0.0)
+
+func set_colorblind_mode(mode: String):
+	"""Phase 7.1: Switch colorblind LUT. mode: '' | 'deuteranopia' | 'protanopia'"""
+	accessibility_colorblind_mode = mode
+	if post_process_pipeline and post_process_pipeline.has_method("generate_colorblind_luts"):
+		if mode.is_empty():
+			# Regenerate normal LUTs
+			post_process_pipeline._preload_luts()
+			post_process_pipeline.set_theme_lut(map.level_config.get("theme", "grass"))
+		else:
+			post_process_pipeline.generate_colorblind_luts(mode)
+
+# Override start_shake to respect reduce_motion (Phase 8.3)
+func start_shake_accessible(intensity: float, duration: float, curve: ShakeCurve = ShakeCurve.EASE_OUT_QUAD):
+	"""Phase 8.3: start_shake respecting accessibility reduce_motion setting."""
+	var actual_intensity = intensity * 0.3 if accessibility_reduce_motion else intensity
+	start_shake(actual_intensity, duration, curve)
+
+# Override start_hitstop to respect reduce_motion
+func start_hitstop_accessible(duration: float, intensity: float = 1.0):
+	"""Phase 8.3: start_hitstop respecting accessibility reduce_motion."""
+	var actual_duration = duration * 0.5 if accessibility_reduce_motion else duration
+	start_hitstop(actual_duration, intensity)
+
 func restart_game(_restore_map_id: int = -1):
 	restart_level()
+
+func _make_radial_light_texture(size: int) -> ImageTexture:
+	"""Phase 4.2: Generate radial gradient texture for PointLight2D."""
+	var img = Image.create(size, size, false, Image.FORMAT_RGBA8)
+	var center = Vector2(size / 2.0, size / 2.0)
+	for y in range(size):
+		for x in range(size):
+			var dist = Vector2(x, y).distance_to(center) / (size / 2.0)
+			var alpha = clamp(1.0 - dist * dist, 0.0, 1.0)
+			img.set_pixel(x, y, Color(1.0, 1.0, 1.0, alpha))
+	return ImageTexture.create_from_image(img)
+
+func trigger_hit_light(world_pos: Vector2, intensity: float = 1.0):
+	"""Phase 4.2: Activate the shared hit-flash light at impact position."""
+	if hit_flash_light:
+		hit_flash_light.position = world_pos
+		hit_flash_light_energy = clamp(intensity * 1.2, 0.4, 2.0)
+		hit_flash_light.energy = hit_flash_light_energy
 
 func _draw():
 	particles.draw(self)

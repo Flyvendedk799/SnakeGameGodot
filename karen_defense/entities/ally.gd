@@ -428,14 +428,26 @@ func _draw():
 	var flash = hit_flash_timer > 0
 	var s = entity_size
 
-	# Enhanced shadow (bigger, more offset, pulsing)
+	# 2.5D: Depth atmosphere fog on ally
+	var root2 = get_tree().current_scene
+	if root2 and root2.get("is_sideview_game") and root2.is_sideview_game:
+		var depth = DepthPlanes.get_depth_factor(position.y)
+		var fog = (1.0 - depth) * 0.30
+		modulate = Color(1.0 - fog * 0.15, 1.0 - fog * 0.06, 1.0 + fog * 0.10, 1.0)
+	else:
+		modulate = Color.WHITE
+
+	# Enhanced shadow with 2.5D depth scaling
 	var shadow_pulse = 1.0
 	if state == AllyState.ENGAGING or state == AllyState.REGROUPING:
 		shadow_pulse = 1.0 + abs(sin(anim_time * 8.0)) * 0.12
-	var shadow_w = s * 2.6 * shadow_pulse
-	var shadow_h = s * 0.9 * shadow_pulse
+	var shadow_depth_scale = DepthPlanes.get_shadow_scale_for_y(position.y)
+	var shadow_alpha = DepthPlanes.get_shadow_alpha_for_y(position.y)
+	var shadow_w = s * 2.6 * shadow_pulse * shadow_depth_scale
+	var shadow_h = s * 0.9 * shadow_pulse * shadow_depth_scale
 	var shadow_y_off = s * 0.6 + 7.0
-	_draw_shadow_ellipse(Rect2(-shadow_w / 2, shadow_y_off - shadow_h / 2, shadow_w, shadow_h), Color(0, 0, 0, 0.32))
+	_draw_shadow_ellipse(Rect2(-shadow_w / 2, shadow_y_off - shadow_h / 2, shadow_w, shadow_h),
+		Color(0, 0, 0, shadow_alpha))
 
 	if sprite_texture:
 		_draw_sprite(flash, s)

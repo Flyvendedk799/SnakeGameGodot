@@ -2,24 +2,52 @@ class_name SpriteAnimator
 extends Node
 
 ## AAA Visual Overhaul: Sprite frame animation system
+## Phase 3.1: Explicit AnimationState enum with blend times (0.05s WALK↔SPRINT)
+## Animation events: callbacks at strike frame for FX sync (on_land_frame, on_dash_start_frame)
 ## Designed to work with just 3 frames + interpolation for smooth 60fps animation
-## Combines with squash/stretch and procedural enhancements
+
+## Phase 3.1: Explicit animation state enum
+enum AnimationState {
+	IDLE,
+	WALK,
+	SPRINT,
+	JUMP_ASCEND,
+	JUMP_FALL,
+	LAND,
+	MELEE_ANTICIPATE,
+	MELEE_STRIKE,
+	MELEE_RECOVERY,
+	DASH,
+	GROUND_POUND,
+	GRAPPLE,
+	BLOCK,
+	HURT,
+	DEATH,
+}
 
 var character_visual: CharacterVisual = null
 var animation_player: AnimationPlayer = null
 var current_state: String = "idle"
-var sprite_frames: Dictionary = {}  # {"idle": Texture2D, "walk_mid": Texture2D, "walk_extended": Texture2D, "attack_windup": Texture2D, "attack_strike": Texture2D}
+var anim_state: AnimationState = AnimationState.IDLE   # Phase 3.1: typed state
+var prev_anim_state: AnimationState = AnimationState.IDLE
+var sprite_frames: Dictionary = {}
 
 # Animation state
 var walk_cycle_time: float = 0.0
-var attack_time: float = 0.0  # Attack animation timer
+var attack_time: float = 0.0
 var current_frame: String = "idle"
-var combo_index: int = 0  # Current combo being performed (0=jab, 1=cross, 2=haymaker)
+var combo_index: int = 0
 
-# Blend weights for smooth transitions
+# Phase 3.1: Blend times
 var blend_time: float = 0.0
 var blend_duration: float = 0.1
 var previous_state: String = "idle"
+var transition_t: float = 0.0  # 0→1 transition progress
+
+# Phase 3.1: Animation event callbacks (assigned by entity)
+var on_land_frame: Callable          # Called at land frame
+var on_dash_start_frame: Callable    # Called at dash start frame
+var on_strike_frame: Callable        # Called at melee strike frame
 
 # Walk cycle timing (for 3-frame walk)
 const WALK_CYCLE_SPEED: float = 6.0  # Cycles per second
@@ -45,9 +73,35 @@ func set_sprite_frames(frames: Dictionary):
 	"""
 	sprite_frames = frames
 
+func set_anim_state(new_state: AnimationState, blend: float = 0.05):
+	"""Phase 3.1: Set typed animation state with blend time."""
+	if new_state == anim_state:
+		return
+	prev_anim_state = anim_state
+	anim_state = new_state
+	transition_t = 0.0
+	blend_duration = blend
+
+	# Fire animation events
+	match new_state:
+		AnimationState.LAND:
+			if on_land_frame.is_valid():
+				on_land_frame.call()
+		AnimationState.DASH:
+			if on_dash_start_frame.is_valid():
+				on_dash_start_frame.call()
+		AnimationState.MELEE_STRIKE:
+			if on_strike_frame.is_valid():
+				on_strike_frame.call()
+		AnimationState.MELEE_ANTICIPATE:
+			# Visual squash for anticipation
+			if character_visual:
+				character_visual.squash_anticipate()
+		_:
+			pass
+
 func update_animation(delta: float, state: String, velocity: Vector2, is_grounded: bool, combo_idx: int = 0):
 	"""Update animation based on movement state."""
-	# Store combo index for use in animation modifications
 	combo_index = combo_idx
 
 	# Determine animation state from movement
@@ -58,9 +112,14 @@ func update_animation(delta: float, state: String, velocity: Vector2, is_grounde
 		previous_state = current_state
 		current_state = target_state
 		blend_time = 0.0
-		# Reset attack timer when FIRST entering attack state (prevent double-trigger)
+		# Phase 3.1: Typed state transitions with blend
+		_sync_typed_state(target_state, velocity, is_grounded)
 		if current_state == "attack" and previous_state != "attack":
 			attack_time = 0.0
+
+	# Update Phase 3.1 transition blend
+	if transition_t < 1.0:
+		transition_t = minf(transition_t + delta / maxf(blend_duration, 0.001), 1.0)
 
 	# Update blend
 	if blend_time < blend_duration:
@@ -79,6 +138,21 @@ func update_animation(delta: float, state: String, velocity: Vector2, is_grounde
 	# Select and apply frame
 	var frame_name = _get_current_frame()
 	_apply_frame(frame_name)
+
+func _sync_typed_state(target_str: String, velocity: Vector2, is_grounded: bool):
+	"""Phase 3.1: Sync typed AnimationState from string state."""
+	match target_str:
+		"idle":   set_anim_state(AnimationState.IDLE, 0.08)
+		"walk":   set_anim_state(AnimationState.WALK, 0.05)
+		"run":    set_anim_state(AnimationState.SPRINT, 0.05)  # WALK↔SPRINT 0.05s blend
+		"jump":   set_anim_state(AnimationState.JUMP_ASCEND, 0.04)
+		"fall":   set_anim_state(AnimationState.JUMP_FALL, 0.04)
+		"land":   set_anim_state(AnimationState.LAND, 0.03)
+		"attack": set_anim_state(AnimationState.MELEE_ANTICIPATE, 0.02)
+		"dash":   set_anim_state(AnimationState.DASH, 0.02)
+		"block":  set_anim_state(AnimationState.BLOCK, 0.05)
+		"hurt":   set_anim_state(AnimationState.HURT, 0.02)
+		"death":  set_anim_state(AnimationState.DEATH, 0.04)
 
 func _get_animation_state(state: String, velocity: Vector2, is_grounded: bool) -> String:
 	"""Determine which animation state to use."""

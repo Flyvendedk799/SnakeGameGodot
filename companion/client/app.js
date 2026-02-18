@@ -2,14 +2,20 @@ const landing = document.getElementById('landing');
 const waiting = document.getElementById('waiting');
 const connected = document.getElementById('connected');
 const codeEl = document.getElementById('code');
+const qrContainer = document.getElementById('qrContainer');
 const cooldownEl = document.getElementById('cooldown');
 const remainingEl = document.getElementById('remaining');
 const abilityHintEl = document.getElementById('abilityHint');
 const connStatusEl = document.getElementById('connStatus');
+const sessionCodeBarEl = document.getElementById('sessionCodeBar');
+const comboBarEl = document.getElementById('comboBar');
+const comboBarFillEl = document.getElementById('comboBarFill');
+const comboBarLabelEl = document.getElementById('comboBarLabel');
 const waveInfoEl = document.getElementById('waveInfo');
 const startBtn = document.getElementById('start');
 const copyBtn = document.getElementById('copy');
 const reconnectBtn = document.getElementById('reconnect');
+const createNewSessionBtn = document.getElementById('createNewSession');
 const minimap = document.getElementById('minimap');
 const btnBomb = document.getElementById('btnBomb');
 const btnSupply = document.getElementById('btnSupply');
@@ -286,6 +292,32 @@ function hideError() {
   if (errorTimeout) clearTimeout(errorTimeout);
 }
 
+function updateQrCode(code) {
+  if (!qrContainer || typeof QRCode === 'undefined') return;
+  qrContainer.innerHTML = '';
+  if (code && code.length === 6) {
+    try {
+      new QRCode(qrContainer, { text: code, width: 140, height: 140 });
+    } catch (_) { /* ignore */ }
+  }
+}
+
+function resetToLandingForNewSession() {
+  sessionCode = null;
+  reconnectToken = null;
+  try {
+    localStorage.removeItem('companion_reconnect_token');
+    localStorage.removeItem('companion_session_code');
+  } catch (_) { /* ignore */ }
+  stopReconnectLoop();
+  if (ws) { ws.close(); ws = null; }
+  landing.classList.remove('hidden');
+  waiting.classList.add('hidden');
+  connected.classList.add('hidden');
+  if (sessionCodeBarEl) sessionCodeBarEl.textContent = '';
+  if (qrContainer) qrContainer.innerHTML = '';
+}
+
 // Impact history timeline
 const historyList = document.getElementById('historyList');
 const impactHistory = [];
@@ -403,10 +435,10 @@ const palettes = {
 };
 
 const abilityInfo = {
-  bomb: { cooldownMs: COOLDOWN_BOMB_MS, maxPerWave: BOMBS_PER_WAVE, hint: 'Tap map to drop bomb', needsTap: true },
-  supply: { cooldownMs: COOLDOWN_SUPPLY_MS, maxPerWave: SUPPLIES_PER_WAVE, hint: 'Tap map to drop supply crate', needsTap: true },
+  bomb: { cooldownMs: COOLDOWN_BOMB_MS, maxPerWave: BOMBS_PER_WAVE, hint: 'Tap map to drop bomb · Long-press to ping', needsTap: true },
+  supply: { cooldownMs: COOLDOWN_SUPPLY_MS, maxPerWave: SUPPLIES_PER_WAVE, hint: 'Tap map to drop supply · Long-press to ping', needsTap: true },
   radar: { cooldownMs: COOLDOWN_RADAR_MS, maxPerWave: RADAR_PER_WAVE, hint: 'Reveal enemies for 5 seconds', needsTap: false },
-  emp: { cooldownMs: COOLDOWN_EMP_MS, maxPerWave: EMP_PER_WAVE, hint: 'Tap map to stun enemies (2s)', needsTap: true }
+  emp: { cooldownMs: COOLDOWN_EMP_MS, maxPerWave: EMP_PER_WAVE, hint: 'Tap map to stun (2s) · Long-press to ping', needsTap: true }
 };
 
 function connectionQualityTier() {
@@ -415,6 +447,17 @@ function connectionQualityTier() {
   if (latencyMs < 90 && packetGapCount <= 1 && fpsEstimate >= 45) return { label: 'Great', color: '#4ade80' };
   if (latencyMs < 180 && packetGapCount <= 3 && fpsEstimate >= 30) return { label: 'Good', color: '#facc15' };
   return { label: 'Poor', color: '#fb7185' };
+}
+
+function updateComboBar() {
+  if (!comboBarEl || !comboBarFillEl || !comboBarLabelEl) return;
+  const pct = Math.round(comboMeter);
+  comboBarFillEl.style.width = pct + '%';
+  comboBarLabelEl.textContent = comboLevel > 0 ? `Combo Lv${comboLevel} · ${pct}%` : (pct > 0 ? `${pct}%` : '');
+  comboBarEl.setAttribute('data-active', comboMeter > 5 ? 'true' : 'false');
+  if (comboReason && comboMeter > 5) {
+    comboBarLabelEl.title = comboReason;
+  }
 }
 
 function updateConnectionBadge() {
@@ -427,6 +470,8 @@ function updateConnectionBadge() {
   connStatusEl.innerHTML = `<span class="status-dot online"></span> ${tier.label} · ${latencyMs > 0 ? `${Math.round(latencyMs)}ms` : '--'}`;
 }
 
+const ABILITY_PRESET_KEY = 'companion_ability_preset';
+
 function saveUiContext() {
   try {
     localStorage.setItem(UI_CONTEXT_KEY, JSON.stringify({
@@ -435,20 +480,26 @@ function saveUiContext() {
       currentWave,
       gameState
     }));
+    localStorage.setItem(ABILITY_PRESET_KEY, selectedAbility);
   } catch (_) { /* ignore storage errors */ }
 }
 
 function loadUiContext() {
   try {
     const raw = localStorage.getItem(UI_CONTEXT_KEY);
-    if (!raw) return;
-    const parsed = JSON.parse(raw);
-    if (typeof parsed.selectedAbility === 'string' && abilityInfo[parsed.selectedAbility]) {
-      selectedAbility = parsed.selectedAbility;
+    const preset = localStorage.getItem(ABILITY_PRESET_KEY);
+    if (typeof preset === 'string' && abilityInfo[preset]) {
+      selectedAbility = preset;
     }
-    if (typeof parsed.currentWave === 'number') currentWave = parsed.currentWave;
-    if (typeof parsed.gameState === 'string') gameState = parsed.gameState;
-    if (parsed.statsPanelVisible === true) statsPanel.classList.remove('hidden');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (typeof parsed.selectedAbility === 'string' && abilityInfo[parsed.selectedAbility]) {
+        selectedAbility = parsed.selectedAbility;
+      }
+      if (typeof parsed.currentWave === 'number') currentWave = parsed.currentWave;
+      if (typeof parsed.gameState === 'string') gameState = parsed.gameState;
+      if (parsed.statsPanelVisible === true) statsPanel.classList.remove('hidden');
+    }
   } catch (_) { /* ignore storage errors */ }
 }
 
@@ -487,17 +538,42 @@ function reconnectDelayMs() {
 
 function showReconnectCountdown() {
   const msLeft = Math.max(0, nextReconnectAt - Date.now());
-  statusEl.textContent = `Reconnecting in ${(msLeft / 1000).toFixed(1)}s...`;
+  const codeSuffix = sessionCode ? ' · Code: ' + sessionCode : '';
+  statusEl.textContent = `Reconnecting in ${(msLeft / 1000).toFixed(1)}s...${codeSuffix}`;
+}
+
+function showCreateNewSessionBtn() {
+  if (createNewSessionBtn) createNewSessionBtn.classList.remove('hidden');
+}
+
+function hideCreateNewSessionBtn() {
+  if (createNewSessionBtn) createNewSessionBtn.classList.add('hidden');
 }
 
 function startReconnectLoop() {
   if (isReconnecting) return;
   isReconnecting = true;
+  hideCreateNewSessionBtn();
   setControlsPaused(true);
-  connected.classList.remove('hidden');
-  waiting.classList.add('hidden');
-  reconnectBtn.classList.remove('hidden');
-  connStatusEl.innerHTML = '<span class="status-dot offline"></span> Reconnecting';
+  hasAuthoritativeState = false;
+  if (!sessionCode && reconnectToken) {
+    try { sessionCode = localStorage.getItem('companion_session_code'); } catch (_) { /* ignore */ }
+  }
+  if (sessionCode) {
+    codeEl.textContent = sessionCode;
+    updateQrCode(sessionCode);
+    landing.classList.add('hidden');
+    waiting.classList.remove('hidden');
+    connected.classList.add('hidden');
+    reconnectBtn.classList.remove('hidden');
+    statusEl.textContent = 'Reconnecting... Share code: ' + sessionCode;
+  } else {
+    // No code known — go to landing so user can start a fresh session
+    landing.classList.remove('hidden');
+    waiting.classList.add('hidden');
+    connected.classList.add('hidden');
+    reconnectBtn.classList.add('hidden');
+  }
   scheduleReconnectAttempt();
 }
 
@@ -505,6 +581,7 @@ function scheduleReconnectAttempt() {
   clearReconnectTimers();
   const delay = reconnectDelayMs();
   reconnectAttempt += 1;
+  if (reconnectAttempt >= 3) showCreateNewSessionBtn();
   nextReconnectAt = Date.now() + delay;
   showReconnectCountdown();
   reconnectCountdownInterval = setInterval(showReconnectCountdown, 100);
@@ -520,6 +597,7 @@ function stopReconnectLoop() {
   clearReconnectTimers();
   setControlsPaused(false);
   reconnectBtn.classList.add('hidden');
+  hideCreateNewSessionBtn();
 }
 
 function openSocket() {
@@ -557,11 +635,14 @@ function setupWsHandlers(socket) {
         }
       }
       if (msg.includes('Invalid code')) {
-        showError('Invalid Code', 'The session code is incorrect or expired. Please create a new session.');
+        resetToLandingForNewSession();
+        showError('Invalid Code', 'The session code is incorrect or expired. Create a new session.', 6000);
       } else if (typeof msg === 'string' && msg.includes('expired')) {
-        showError('Session Expired', 'Your session has expired after 2 hours. Please create a new session.');
+        resetToLandingForNewSession();
+        showError('Session Expired', 'Your session has expired after 2 hours. Create a new session.', 6000);
       } else if (msg === 'invalid_session') {
-        showError('Session Error', 'Session invalid or expired. Create a new one.');
+        resetToLandingForNewSession();
+        showError('Session Error', 'Session invalid or expired. Create a new one.', 6000);
       } else {
         showError('Connection Error', typeof msg === 'string' ? msg : 'Request rejected by server.');
       }
@@ -571,15 +652,18 @@ function setupWsHandlers(socket) {
     if (m.type === 'joined' && m.token) {
       hideError();
       reconnectToken = m.token;
+      if (m.code) sessionCode = m.code;  // Always trust server's authoritative code
       try {
         localStorage.setItem('companion_reconnect_token', reconnectToken);
         localStorage.setItem('companion_session_code', sessionCode);
       } catch (_) { /* ignore storage errors */ }
       stopReconnectLoop();
+      // Stay on waiting until game connects — code must remain visible for PC player to enter
       landing.classList.add('hidden');
-      waiting.classList.add('hidden');
-      connected.classList.remove('hidden');
-      connStatusEl.innerHTML = '<span class="status-dot online"></span> Connected';
+      waiting.classList.remove('hidden');
+      connected.classList.add('hidden');
+      statusEl.textContent = 'Session ready. Share code with game.';
+      connStatusEl.innerHTML = '<span class="status-dot online"></span> Connected to server';
     } else if (m.type === 'game_connected') {
       hideError();
       bombsRemaining = BOMBS_PER_WAVE;
@@ -594,6 +678,13 @@ function setupWsHandlers(socket) {
       connected.classList.remove('hidden');
       updateConnectionBadge();
       stopReconnectLoop();
+      if (sessionCodeBarEl && sessionCode) {
+        sessionCodeBarEl.textContent = 'Session: ' + sessionCode;
+        sessionCodeBarEl.style.display = '';
+      }
+      updateComboBar();
+      // Defer tutorial until game is connected — code was visible on waiting screen
+      showTutorial();
     } else if (m.type === 'drop_ack') {
       if (m.ability === 'bomb') {
         lastBombAt = Date.now();
@@ -616,6 +707,8 @@ function setupWsHandlers(socket) {
       saveStats();
       playSoundEffect('drop');
       _hapticFeedback();
+    } else if (m.type === 'ping_ack') {
+      addToHistory('📍', 'Ping sent', 'Look here!');
     } else if (m.type === 'radar_ack') {
       lastRadarAt = Date.now();
       stats.totalRadars++;
@@ -626,6 +719,16 @@ function setupWsHandlers(socket) {
       saveStats();
       playSoundEffect('radar');
       _hapticFeedback();
+    } else if (m.type === 'wave_summary') {
+      const k = m.kills || 0;
+      const s = m.supplies || 0;
+      const ms = m.mega_strikes || 0;
+      const parts = [];
+      if (k > 0) parts.push(`${k} kills`);
+      if (s > 0) parts.push(`${s} supplies`);
+      if (ms > 0) parts.push(`${ms} MEGA`);
+      const text = parts.length ? parts.join(' · ') : 'Wave complete';
+      addToHistory('🏆', 'Wave complete', text);
     } else if (m.type === 'new_wave') {
       bombsRemaining = BOMBS_PER_WAVE;
       suppliesRemaining = SUPPLIES_PER_WAVE;
@@ -696,6 +799,7 @@ function setupWsHandlers(socket) {
       if (typeof m.meter === 'number') comboMeter = Math.max(0, Math.min(100, m.meter));
       if (typeof m.level === 'number') comboLevel = Math.max(0, Math.min(4, m.level));
       comboReason = m.reason || '';
+      updateComboBar();
       if (comboLevel >= 2) playSoundEffect('combo');
     } else if (m.type === 'combo_event') {
       if (m.combo === 'emp_followup') {
@@ -739,15 +843,13 @@ startBtn.onclick = async () => {
       return;
     }
     sessionCode = d.code;
-    reconnectToken = d.token;
+    reconnectToken = null;  // Don't use rejoin for a fresh session — joined handler will set this
     codeEl.textContent = sessionCode;
+    updateQrCode(sessionCode);
     landing.classList.add('hidden');
     waiting.classList.remove('hidden');
     hideReconnect();
     saveUiContext();
-
-    // Show tutorial on first use
-    showTutorial();
 
     openSocket();
   } catch (err) {
@@ -763,6 +865,14 @@ function hideReconnect() {
   reconnectBtn.classList.add('hidden');
   statusEl.textContent = 'Waiting for game...';
 }
+
+createNewSessionBtn.onclick = () => {
+  stopReconnectLoop();
+  resetToLandingForNewSession();
+  landing.classList.remove('hidden');
+  waiting.classList.add('hidden');
+  connected.classList.add('hidden');
+};
 
 reconnectBtn.onclick = () => {
   if (ws) return;
@@ -1116,17 +1226,7 @@ function drawMinimap() {
   }
 }
 
-function doDrop(e) {
-  if (!ws || ws.readyState !== 1) return;
-  if (!canDrop(selectedAbility)) {
-    minimap.classList.add('reject-flash');
-    setTimeout(() => minimap.classList.remove('reject-flash'), 200);
-    return;
-  }
-  // Immediate visual feedback before server ack (feels more responsive)
-  _hapticFeedback();
-  minimap.classList.add('drop-flash');
-  setTimeout(() => minimap.classList.remove('drop-flash'), 150);
+function getMinimapNormCoords(e) {
   const r = minimap.getBoundingClientRect();
   const rw = Math.max(1, r.width);
   const rh = Math.max(1, r.height);
@@ -1134,35 +1234,106 @@ function doDrop(e) {
   const cy = e.clientY ?? (e.touches && e.touches[0] ? e.touches[0].clientY : r.top);
   const x = Math.max(0, Math.min(1, (cx - r.left) / rw));
   const y = Math.max(0, Math.min(1, (cy - r.top) / rh));
+  return { x, y };
+}
+
+function doPing(e) {
+  if (!ws || ws.readyState !== 1) return;
+  const { x, y } = getMinimapNormCoords(e);
+  ws.send(JSON.stringify({ type: 'ping_request', x, y }));
+  _hapticFeedback();
+  minimap.classList.add('drop-flash');
+  setTimeout(() => minimap.classList.remove('drop-flash'), 150);
+}
+
+function doDrop(e) {
+  if (!ws || ws.readyState !== 1) return;
+  if (!canDrop(selectedAbility)) {
+    minimap.classList.add('reject-flash');
+    setTimeout(() => minimap.classList.remove('reject-flash'), 200);
+    return;
+  }
+  _hapticFeedback();
+  minimap.classList.add('drop-flash');
+  setTimeout(() => minimap.classList.remove('drop-flash'), 150);
+  const { x, y } = getMinimapNormCoords(e);
   const msg = selectedAbility === 'bomb' ? { type: 'helicopter_drop', x, y } :
                selectedAbility === 'supply' ? { type: 'supply_drop', x, y } :
                selectedAbility === 'emp' ? { type: 'emp_drop', x, y } : null;
   if (msg) ws.send(JSON.stringify(msg));
 }
 
-function onMinimapTap(e) {
+const PING_LONG_PRESS_MS = 500;
+let minimapLongPressTimer = null;
+let minimapPendingEvent = null;
+
+function onMinimapPointerDown(e) {
   e.preventDefault();
   e.stopPropagation();
-  doDrop(e);
+  minimapPendingEvent = e;
+  minimapLongPressTimer = setTimeout(() => {
+    minimapLongPressTimer = null;
+    if (minimapPendingEvent) {
+      doPing(minimapPendingEvent);
+      minimapPendingEvent = null;
+    }
+  }, PING_LONG_PRESS_MS);
 }
-minimap.addEventListener('pointerdown', onMinimapTap, { passive: false });
-minimap.addEventListener('click', onMinimapTap, { passive: false });
-minimap.addEventListener('touchend', (e) => {
-  if (e.changedTouches && e.changedTouches[0]) {
-    e.preventDefault();
-    doDrop({ clientX: e.changedTouches[0].clientX, clientY: e.changedTouches[0].clientY });
-  }
-}, { passive: false });
 
-btnBomb.onclick = () => {
-  setSelectedAbility('bomb');
-};
-btnSupply.onclick = () => {
-  setSelectedAbility('supply');
-};
-btnEmp.onclick = () => {
-  setSelectedAbility('emp');
-};
+function onMinimapPointerUp(e) {
+  if (minimapLongPressTimer) {
+    clearTimeout(minimapLongPressTimer);
+    minimapLongPressTimer = null;
+    if (minimapPendingEvent) {
+      doDrop(minimapPendingEvent);
+      minimapPendingEvent = null;
+    }
+  }
+  minimapPendingEvent = null;
+}
+
+function onMinimapPointerCancel(e) {
+  if (minimapLongPressTimer) clearTimeout(minimapLongPressTimer);
+  minimapLongPressTimer = null;
+  minimapPendingEvent = null;
+}
+
+minimap.addEventListener('pointerdown', onMinimapPointerDown, { passive: false });
+minimap.addEventListener('pointerup', onMinimapPointerUp, { passive: false });
+minimap.addEventListener('pointercancel', onMinimapPointerCancel, { passive: false });
+minimap.addEventListener('pointerleave', onMinimapPointerCancel, { passive: false });
+
+function initAbilityButtons() {
+  [btnBomb, btnSupply, btnRadar, btnEmp].forEach((btn) => {
+    if (!btn) return;
+    const ability = btn.dataset?.ability;
+    if (!ability) return;
+    btn.onclick = () => {
+      setSelectedAbility(ability);
+      if (ability === 'radar' && ws && ws.readyState === 1) {
+        if (canUseAbility('radar')) {
+          ws.send(JSON.stringify({ type: 'radar_ping' }));
+        } else {
+          btn.classList.add('reject-flash');
+          setTimeout(() => btn.classList.remove('reject-flash'), 200);
+        }
+      }
+    };
+    let longPressTimer = null;
+    btn.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      longPressTimer = setTimeout(() => {
+        longPressTimer = null;
+        try { localStorage.setItem(ABILITY_PRESET_KEY, ability); } catch (_) {}
+        _hapticFeedback();
+        addToHistory('⭐', 'Default ability set', ability.charAt(0).toUpperCase() + ability.slice(1));
+      }, 800);
+    });
+    btn.addEventListener('pointerup', () => { if (longPressTimer) clearTimeout(longPressTimer); });
+    btn.addEventListener('pointerleave', () => { if (longPressTimer) clearTimeout(longPressTimer); });
+  });
+}
+initAbilityButtons();
 // Virtual joystick for helicopter control (only visible in game - companion watches TV)
 function initJoystick() {
   const base = document.getElementById('joystickBase');
@@ -1249,17 +1420,6 @@ function initJoystick() {
 }
 initJoystick();
 
-btnRadar.onclick = () => {
-  // Radar is instant - no map tap needed
-  if (!ws || ws.readyState !== 1) return;
-  if (!canUseAbility('radar')) {
-    btnRadar.classList.add('reject-flash');
-    setTimeout(() => btnRadar.classList.remove('reject-flash'), 200);
-    return;
-  }
-  ws.send(JSON.stringify({ type: 'radar_ping' }));
-};
-
 // Ping interval for latency monitoring
 setInterval(() => {
   if (ws && ws.readyState === 1) {
@@ -1332,6 +1492,7 @@ let _lastCooldownText = '', _lastRemainingText = '', _lastWaveHtml = '', _lastMi
 
 setInterval(() => {
   updateAbilityButtons();
+  updateComboBar();
 
   const info = abilityInfo[selectedAbility];
   const rem = getCooldownRemaining(selectedAbility);

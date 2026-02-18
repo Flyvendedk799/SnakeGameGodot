@@ -6,6 +6,7 @@ signal chopper_input_received(ax: float, ay: float)
 signal supply_drop_requested_at_normalized(x: float, y: float)
 signal emp_drop_requested_at_normalized(x: float, y: float)
 signal radar_ping_requested()
+signal ping_requested_at_normalized(x: float, y: float)
 signal connection_status_changed(connected: bool)
 
 @export var server_url: String = "wss://snakegamegodot-production.up.railway.app/ws"
@@ -35,6 +36,11 @@ var _debug_reconnect_attempts: int = 0
 var _debug_send_interval_misses: int = 0
 var _last_send_minimap_at_msec: int = 0
 
+var _latency_ms: int = 0
+var _last_ping_time: int = 0
+var _ping_timer: float = 0.0
+const PING_INTERVAL_MSEC: int = 5000
+
 func _dict_has_only_keys(d: Dictionary, allowed: Array[String]) -> bool:
 	if d.size() != allowed.size():
 		return false
@@ -62,12 +68,16 @@ func _parse_server_message(data: Dictionary) -> Dictionary:
 			if not _dict_has_only_keys(data, ["type", "code"]): return {}
 			if not (data.get("code") is String): return {}
 			return data
-		"bomb_drop", "supply_drop", "emp_drop":
+		"bomb_drop", "supply_drop", "emp_drop", "ping_request":
 			if not _dict_has_only_keys(data, ["type", "x", "y"]): return {}
 			if not _num_in_range(data.get("x"), 0.0, 1.0) or not _num_in_range(data.get("y"), 0.0, 1.0): return {}
 			return { "type": t, "x": float(data.get("x")), "y": float(data.get("y")) }
 		"radar_ping", "companion_connected":
 			if not _dict_has_only_keys(data, ["type"]): return {}
+			return data
+		"pong":
+			if not _dict_has_only_keys(data, ["type", "timestamp"]): return {}
+			if not (data.get("timestamp") is int or data.get("timestamp") is float): return {}
 			return data
 		"chopper_input":
 			if not _dict_has_only_keys(data, ["type", "x", "y"]): return {}
@@ -110,6 +120,11 @@ func _process(delta: float):
 	_ws.poll()
 	var state = _ws.get_ready_state()
 	if state == WebSocketPeer.STATE_OPEN:
+		_ping_timer -= delta * 1000.0
+		if _ping_timer <= 0 and _last_ping_time == 0:
+			_ping_timer = float(PING_INTERVAL_MSEC)
+			_last_ping_time = Time.get_ticks_msec()
+			_ws.send_text(JSON.stringify({ type = "ping", timestamp = _last_ping_time }))
 		if _connecting:
 			_reconnect_backoff = 2.0
 			_connecting = false
@@ -154,10 +169,18 @@ func _process(delta: float):
 						emp_drop_requested_at_normalized.emit(x, y)
 					"radar_ping":
 						radar_ping_requested.emit()
+					"ping_request":
+						var x = float(parsed.get("x", 0.5))
+						var y = float(parsed.get("y", 0.5))
+						ping_requested_at_normalized.emit(x, y)
 					"chopper_input":
 						var ax = float(parsed.get("x", 0))
 						var ay = float(parsed.get("y", 0))
 						chopper_input_received.emit(ax, ay)
+					"pong":
+						if _last_ping_time > 0:
+							_latency_ms = Time.get_ticks_msec() - _last_ping_time
+						_last_ping_time = 0
 	elif state == WebSocketPeer.STATE_CLOSED:
 		connection_status_changed.emit(false)
 		_ws = null
@@ -321,6 +344,19 @@ func send_supply_impact(nx: float, ny: float):
 		return
 	_ws.send_text(JSON.stringify({ type = "supply_impact", x = clampf(nx, 0, 1), y = clampf(ny, 0, 1) }))
 
+func send_wave_summary(kills: int, supplies: int, mark_strike: int, supply_chain: int, emp_followup: int, mega_strikes: int):
+	if _ws == null or _ws.get_ready_state() != WebSocketPeer.STATE_OPEN:
+		return
+	_ws.send_text(JSON.stringify({
+		type = "wave_summary",
+		kills = kills,
+		supplies = supplies,
+		mark_strike = mark_strike,
+		supply_chain = supply_chain,
+		emp_followup = emp_followup,
+		mega_strikes = mega_strikes
+	}))
+
 func send_game_state(state_name: String, state_seq: int, wave: int):
 	if _ws == null or _ws.get_ready_state() != WebSocketPeer.STATE_OPEN:
 		return
@@ -328,6 +364,9 @@ func send_game_state(state_name: String, state_seq: int, wave: int):
 
 func is_session_connected() -> bool:
 	return _ws != null and _ws.get_ready_state() == WebSocketPeer.STATE_OPEN
+
+func get_latency_ms() -> int:
+	return _latency_ms
 
 func disconnect_session():
 	_code = ""
@@ -340,4 +379,6 @@ func _disconnect():
 		_ws.close()
 		_ws = null
 	_connecting = false
+	_latency_ms = 0
+	_last_ping_time = 0
 	_reset_minimap_stream_state()

@@ -352,6 +352,13 @@ function parseInboundMessage(msg) {
     case 'new_wave':
       if (!hasOnlyKeys(msg, ['type'])) return null;
       return { type: msg.type };
+    case 'ping_request': {
+      if (!hasOnlyKeys(msg, ['type', 'x', 'y'])) return null;
+      const x = parseBoundedNumber(msg.x, 0, 1);
+      const y = parseBoundedNumber(msg.y, 0, 1);
+      if (x === null || y === null) return null;
+      return { type: 'ping_request', x, y };
+    }
     case 'minimap': {
       const keys = ['type', 'enemies', 'allies', 'players', 'wave', 'state', 'chopper'];
       if (!Object.keys(msg).every((k) => keys.includes(k))) return null;
@@ -622,6 +629,14 @@ wss.on('connection', (ws) => {
         relayWithTiming(s.game, { type: 'radar_ping' }, ingressAt, s);
         safeSend(ws, { type: 'radar_ack', remaining: RADAR_PER_WAVE - s.radarsThisWave });
         applyCombo(s, 6, 'Radar Ping');
+      } else if (t === 'ping_request' && ws.role === 'companion' && ws.code) {
+        const s = sessions.get(ws.code);
+        if (!s || !s.game) return;
+        sessionRecordMessage(s, t, now);
+        const x = Math.max(0, Math.min(1, Number(msg.x) ?? 0.5));
+        const y = Math.max(0, Math.min(1, Number(msg.y) ?? 0.5));
+        relayWithTiming(s.game, { type: 'ping_request', x, y }, ingressAt, s);
+        safeSend(ws, { type: 'ping_ack', x, y });
       } else if (t === 'new_wave' && ws.role === 'game' && ws.code) {
         const s = sessions.get(ws.code);
         if (s) {
@@ -688,6 +703,21 @@ wss.on('connection', (ws) => {
           const supplyPayload = { type: 'supply_impact', x: msg.x, y: msg.y, supplyChain };
           relayWithTiming(s.companion, supplyPayload, ingressAt, s);
         }
+      } else if (t === 'wave_summary' && ws.role === 'game' && ws.code) {
+        const s = sessions.get(ws.code);
+        if (s && s.companion) {
+          sessionRecordMessage(s, t, now);
+          const payload = {
+            type: 'wave_summary',
+            kills: Math.max(0, Number(msg.kills) || 0),
+            supplies: Math.max(0, Number(msg.supplies) || 0),
+            mark_strike: Math.max(0, Number(msg.mark_strike) || 0),
+            supply_chain: Math.max(0, Number(msg.supply_chain) || 0),
+            emp_followup: Math.max(0, Number(msg.emp_followup) || 0),
+            mega_strikes: Math.max(0, Number(msg.mega_strikes) || 0)
+          };
+          relayWithTiming(s.companion, payload, ingressAt, s);
+        }
       } else if (t === 'game_state' && ws.role === 'game' && ws.code) {
         const s = sessions.get(ws.code);
         if (s && s.companion) {
@@ -697,7 +727,7 @@ wss.on('connection', (ws) => {
           const fwd = relayWithMetadata(s, { type: 'game_state', state: msg.state, state_seq: stateSeq, wave });
           relayWithTiming(s.companion, fwd, ingressAt, s);
         }
-      } else if (t === 'ping' && ws.role === 'companion') {
+      } else if (t === 'ping' && (ws.role === 'companion' || ws.role === 'game')) {
         if (ws.code) {
           const s = sessions.get(ws.code);
           if (s) sessionRecordMessage(s, t, now);

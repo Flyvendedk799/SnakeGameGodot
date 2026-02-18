@@ -17,59 +17,35 @@ static func get_tilemap_level_path(level_id: int) -> String:
 	return ""
 
 static func get_level(level_id: int) -> Dictionary:
+	var level: Dictionary
 	match level_id:
-		1:
-			return _level_1()
-		2:
-			return _level_2()
-		3:
-			return _level_3()
-		4:
-			return _level_4()
-		5:
-			return _level_5()
-		6:
-			return _level_6()
-		7:
-			return _level_7()
-		8:
-			return _level_8()
-		9:
-			return _level_9()
-		10:
-			return _level_10()
-		11:
-			return _level_11()
-		12:
-			return _level_12()
-		13:
-			return _level_13()
-		14:
-			return _level_14()
-		15:
-			return _level_15()
-		16:
-			return _level_with_id(_level_1(), 16, "Frost Approach", "summit")
-		17:
-			return _level_with_id(_level_2(), 17, "Ice Path", "summit")
-		18:
-			return _level_with_id(_level_3(), 18, "Blizzard", "summit")
-		19:
-			return _level_with_id(_level_4(), 19, "Peak Assault", "summit")
-		20:
-			return _level_with_id(_level_5(), 20, "Summit Guardian", "summit")
-		21:
-			return _level_with_id(_level_1(), 21, "Final Stretch", "summit")
-		22:
-			return _level_with_id(_level_2(), 22, "Last Stand", "summit")
-		23:
-			return _level_with_id(_level_3(), 23, "The Gauntlet", "summit")
-		24:
-			return _level_with_id(_level_4(), 24, "Endgame", "summit")
-		25:
-			return _level_with_id(_level_5(), 25, "The Final Boss", "summit")
-		_:
-			return _level_1()
+		1:  level = _level_1()
+		2:  level = _level_2()
+		3:  level = _level_3()
+		4:  level = _level_4()
+		5:  level = _level_5()
+		6:  level = _level_6()
+		7:  level = _level_7()
+		8:  level = _level_8()
+		9:  level = _level_9()
+		10: level = _level_10()
+		11: level = _level_11()
+		12: level = _level_12()
+		13: level = _level_13()
+		14: level = _level_14()
+		15: level = _level_15()
+		16: level = _level_with_id(_level_1(), 16, "Frost Approach", "summit")
+		17: level = _level_with_id(_level_2(), 17, "Ice Path", "summit")
+		18: level = _level_with_id(_level_3(), 18, "Blizzard", "summit")
+		19: level = _level_with_id(_level_4(), 19, "Peak Assault", "summit")
+		20: level = _level_with_id(_level_5(), 20, "Summit Guardian", "summit")
+		21: level = _level_with_id(_level_1(), 21, "Final Stretch", "summit")
+		22: level = _level_with_id(_level_2(), 22, "Last Stand", "summit")
+		23: level = _level_with_id(_level_3(), 23, "The Gauntlet", "summit")
+		24: level = _level_with_id(_level_4(), 24, "Endgame", "summit")
+		25: level = _level_with_id(_level_5(), 25, "The Final Boss", "summit")
+		_:  level = _level_1()
+	return _apply_identity(level)
 
 static func _level_with_id(base: Dictionary, level_id: int, name: String, theme_override: String = "") -> Dictionary:
 	var c = base.duplicate(true)
@@ -78,6 +54,132 @@ static func _level_with_id(base: Dictionary, level_id: int, name: String, theme_
 	if not theme_override.is_empty():
 		c["theme"] = theme_override
 	return c
+
+## Phase 3.4 / 5.1 / 5.2: Per-level visual identity and pacing
+## Called by get_level() to merge atmosphere, pacing, and destructible data.
+static func _apply_identity(level: Dictionary) -> Dictionary:
+	var id: int = level.get("id", 1)
+	var identity = _LEVEL_IDENTITY.get(id, {})
+	if not identity.is_empty():
+		for key in identity:
+			level[key] = identity[key]
+	return level
+
+## time_of_day: 0.0=midnight 0.25=dawn 0.5=noon 0.75=dusk 1.0=midnight
+## weather_intensity: 0.0=none … 2.0=storm
+## fog_preset: key from LUTGenerator.FOG_PRESETS ("none","light","medium","dense","sky","lava","snow")
+## intensity_curve: key used by SpawnDirector ("steady","escalating","burst_rest","final_boss")
+## segment_theme_overrides: {x_threshold: theme} — triggers biome crossfade
+## destructible_walls: [{x,y,w,h,hp,loot_gold,key_drop_chance,passage_type}]
+## locks: [{x,y,w,h,required_keys}]
+const _LEVEL_IDENTITY: Dictionary = {
+	1: {
+		"time_of_day": 0.55, "weather_intensity": 0.5,
+		"fog_preset": "light", "intensity_curve": "steady",
+	},
+	2: {
+		"time_of_day": 0.60, "weather_intensity": 0.7,
+		"fog_preset": "light", "intensity_curve": "escalating",
+	},
+	3: {
+		"time_of_day": 0.15, "weather_intensity": 0.4,
+		"fog_preset": "medium", "intensity_curve": "escalating",
+		"destructible_walls": [
+			{"x": 1490, "y": 400, "w": 32, "h": 80, "hp": 30, "loot_gold": 25, "key_drop_chance": 0.3, "passage_type": "secret_passage"},
+		],
+	},
+	4: {
+		"time_of_day": 0.50, "weather_intensity": 0.0,
+		"fog_preset": "sky", "intensity_curve": "burst_rest",
+	},
+	5: {
+		"time_of_day": 0.72, "weather_intensity": 0.85,
+		"fog_preset": "snow", "intensity_curve": "final_boss",
+		# Multi-biome crossfades: summit → cave → summit → sky → summit
+		"segment_theme_overrides": {
+			2100: "cave",
+			2780: "summit",
+			4880: "sky",
+			5580: "summit",
+		},
+		"destructible_walls": [
+			{"x": 2750, "y": 270, "w": 36, "h": 90, "hp": 40, "loot_gold": 35, "key_drop_chance": 0.4, "passage_type": "alt_path"},
+		],
+	},
+	6: {
+		"time_of_day": 0.02, "weather_intensity": 0.45,
+		"fog_preset": "dense", "intensity_curve": "burst_rest",
+		"destructible_walls": [
+			{"x": 1850, "y": 400, "w": 30, "h": 80, "hp": 25, "loot_gold": 20, "key_drop_chance": 0.25, "passage_type": "alt_path"},
+		],
+	},
+	7: {
+		"time_of_day": 0.40, "weather_intensity": 0.6,
+		"fog_preset": "light", "intensity_curve": "burst_rest",
+		"destructible_walls": [
+			{"x": 1620, "y": 380, "w": 34, "h": 86, "hp": 30, "loot_gold": 50, "key_drop_chance": 0.5, "passage_type": "treasure_room"},
+		],
+	},
+	8: {
+		"time_of_day": 0.50, "weather_intensity": 0.0,
+		"fog_preset": "sky", "intensity_curve": "steady",
+	},
+	9: {
+		"time_of_day": 0.10, "weather_intensity": 0.55,
+		"fog_preset": "medium", "intensity_curve": "escalating",
+		"destructible_walls": [
+			{"x": 2300, "y": 440, "w": 32, "h": 80, "hp": 35, "loot_gold": 30, "key_drop_chance": 0.35, "passage_type": "secret_passage"},
+		],
+	},
+	10: {
+		"time_of_day": 0.77, "weather_intensity": 1.0,
+		"fog_preset": "snow", "intensity_curve": "escalating",
+	},
+	11: {
+		"time_of_day": 0.00, "weather_intensity": 0.6,
+		"fog_preset": "dense", "intensity_curve": "escalating",
+		"destructible_walls": [
+			{"x": 1800, "y": 380, "w": 30, "h": 80, "hp": 40, "loot_gold": 30, "key_drop_chance": 0.3, "passage_type": "secret_passage"},
+			{"x": 3200, "y": 380, "w": 30, "h": 80, "hp": 40, "loot_gold": 30, "key_drop_chance": 0.3, "passage_type": "alt_path"},
+		],
+	},
+	12: {
+		"time_of_day": 0.48, "weather_intensity": 0.0,
+		"fog_preset": "sky", "intensity_curve": "burst_rest",
+		"locks": [
+			{"x": 2200, "y": 430, "w": 48, "h": 120, "required_keys": 1},
+		],
+		"destructible_walls": [
+			{"x": 1500, "y": 380, "w": 32, "h": 80, "hp": 25, "loot_gold": 0, "key_drop_chance": 1.0, "passage_type": "secret_passage"},
+		],
+	},
+	13: {
+		"time_of_day": 0.25, "weather_intensity": 0.8,
+		"fog_preset": "light", "intensity_curve": "escalating",
+	},
+	14: {
+		"time_of_day": 0.00, "weather_intensity": 0.7,
+		"fog_preset": "dense", "intensity_curve": "final_boss",
+		"destructible_walls": [
+			{"x": 2000, "y": 380, "w": 32, "h": 80, "hp": 45, "loot_gold": 40, "key_drop_chance": 0.4, "passage_type": "alt_path"},
+			{"x": 3500, "y": 380, "w": 32, "h": 80, "hp": 45, "loot_gold": 40, "key_drop_chance": 0.4, "passage_type": "secret_passage"},
+		],
+		"locks": [
+			{"x": 2800, "y": 420, "w": 48, "h": 120, "required_keys": 2},
+		],
+	},
+	15: {
+		"time_of_day": 0.75, "weather_intensity": 1.3,
+		"fog_preset": "snow", "intensity_curve": "final_boss",
+		"destructible_walls": [
+			{"x": 2500, "y": 370, "w": 36, "h": 90, "hp": 50, "loot_gold": 60, "key_drop_chance": 0.5, "passage_type": "treasure_room"},
+			{"x": 4800, "y": 370, "w": 36, "h": 90, "hp": 50, "loot_gold": 60, "key_drop_chance": 0.5, "passage_type": "alt_path"},
+		],
+		"locks": [
+			{"x": 3600, "y": 390, "w": 48, "h": 120, "required_keys": 2},
+		],
+	},
+}
 
 static func _level_1() -> Dictionary:
 	# Elite Tutorial: [1] Jump over 90px pit, [2] DASH across 100px gap (mandatory), [3] DOUBLE JUMP to elevated platform + secret ledge
@@ -394,18 +496,18 @@ static func _level_5() -> Dictionary:
 		"platforms": [
 			{"x": 540, "y": 338, "w": 120, "h": 22},
 			{"x": 1300, "y": 318, "w": 60, "h": 22},
-			{"x": 2000, "y": 458, "w": 80, "h": 22},
-			{"x": 2700, "y": 198, "w": 60, "h": 22},
-			# Grapple route to skybridge (alternative to stair-step)
-			{"x": 3200, "y": 178, "w": 70, "h": 22},
+			{"x": 2000, "y": 458, "w": 80, "h": 22, "path_type": "low"},  # Cave descent - low/hidden
+			{"x": 2700, "y": 198, "w": 60, "h": 22, "path_type": "high"}, # High post-cave exit
+			# Grapple route to skybridge (alternative to stair-step) — high risk / fast
+			{"x": 3200, "y": 178, "w": 70, "h": 22, "path_type": "high"},
 			{"x": 3400, "y": 318, "w": 60, "h": 22},
-			{"x": 4800, "y": 278, "w": 60, "h": 22},
-			{"x": 5500, "y": 78, "w": 60, "h": 22},
+			{"x": 4800, "y": 278, "w": 60, "h": 22, "path_type": "high"},
+			{"x": 5500, "y": 78, "w": 60, "h": 22, "path_type": "high"},  # Skybridge peak
 			# Final gauntlet micro-platforms for punctuation
-			{"x": 6200, "y": 298, "w": 70, "h": 22},
-			{"x": 6900, "y": 298, "w": 70, "h": 22},
+			{"x": 6200, "y": 298, "w": 70, "h": 22, "path_type": "high"},
+			{"x": 6900, "y": 298, "w": 70, "h": 22, "path_type": "high"},
 			# MEGA-ONLY dramatic beat platform
-			{"x": 7600, "y": 278, "w": 90, "h": 22}
+			{"x": 7600, "y": 278, "w": 90, "h": 22, "path_type": "high"}
 		],
 		"wall_segments": [
 			{"x": 3538, "y": 150, "w": 18, "h": 320},
@@ -542,11 +644,11 @@ static func _level_7() -> Dictionary:
 			# Entry dash platform
 			{"x": 938, "y": 328, "w": 90, "h": 22},
 			# Gold zone route variety - high path vs low path
-			{"x": 1280, "y": 308, "w": 80, "h": 22},   # High path option 1
-			{"x": 1580, "y": 288, "w": 75, "h": 22},   # High path option 2
+			{"x": 1280, "y": 308, "w": 80, "h": 22, "path_type": "high"},   # High path option 1
+			{"x": 1580, "y": 288, "w": 75, "h": 22, "path_type": "high"},   # High path option 2
 			# RISKY narrow platform - standing yields more kills but dangerous
-			{"x": 1860, "y": 310, "w": 60, "h": 22},   # Narrow risky platform
-			{"x": 2180, "y": 308, "w": 80, "h": 22},   # High path option 3
+			{"x": 1860, "y": 310, "w": 60, "h": 22, "path_type": "high"},   # Narrow risky platform
+			{"x": 2180, "y": 308, "w": 80, "h": 22, "path_type": "high"},   # High path option 3
 			{"x": 2450, "y": 328, "w": 70, "h": 22}    # Exit transition platform
 		],
 		"grapple_anchors": [

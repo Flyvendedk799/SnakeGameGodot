@@ -11,6 +11,8 @@ var scroll_offset: int = 0
 var mid_wave: bool = false
 var shop_purchasing_player_index: int = 0  # 0=P1, 1=P2 (for Equipment tab; only when p2_joined)
 var input_cooldown: float = 0.0  # Brief cooldown to prevent stick-drift tab switch on open
+# Phase 5.3: Checkpoint economy depth
+var checkpoint_tier: int = 0  # Increases as player reaches later checkpoints
 var last_mouse_pos: Vector2 = Vector2.ZERO  # Track mouse to avoid overriding controller nav
 var using_controller: bool = false  # True when last input was from controller
 
@@ -35,6 +37,52 @@ const MENU_H = 620.0
 
 func setup(game_ref):
 	game = game_ref
+
+# Phase 5.3: Checkpoint economy depth
+func set_checkpoint_tier(index: int):
+	"""Called by CheckpointManager before showing shop. Tier unlocks premium items."""
+	checkpoint_tier = index
+
+func _filter_items_by_tier(items: Array) -> Array:
+	"""Phase 5.3: Filter/annotate items by checkpoint tier.
+	   Tier 0 = basics only. Tier 1+ = standard. Tier 3+ = premium. Tier 5+ = curse items visible.
+	"""
+	var result = []
+	for item in items:
+		var item_tier = item.get("tier", 0)
+		var is_curse = item.get("is_curse", false)
+		var is_persistent = item.get("persistent", false)
+		# Tier gate: only show items up to current checkpoint_tier
+		if item_tier > checkpoint_tier:
+			continue
+		# Curse items only appear at tier 5+ (late game high-risk trades)
+		if is_curse and checkpoint_tier < 5:
+			continue
+		result.append(item)
+	# Inject curse item if deep enough (tier >= 5): one guaranteed curse slot
+	if checkpoint_tier >= 5 and not items.any(func(i): return i.get("is_curse", false)):
+		result.append(_make_curse_item())
+	return result
+
+func _make_curse_item() -> Dictionary:
+	"""Phase 5.3: Generate a procedural curse item (risky trade-off).
+	   E.g. +30% damage, -20% max HP (persistent penalty).
+	"""
+	var curse_variants = [
+		{"name": "Blood Pact",    "cost": 0, "is_curse": true, "persistent": true,
+		 "description": "+35% ATK / -25% max HP",
+		 "effect": {"atk_mult": 1.35, "max_hp_mult": 0.75}},
+		{"name": "Glass Cannon",  "cost": 0, "is_curse": true, "persistent": false,
+		 "description": "+50% ATK / die in 1 hit (this run)",
+		 "effect": {"atk_mult": 1.5,  "one_shot": true}},
+		{"name": "Cursed Speed",  "cost": 0, "is_curse": true, "persistent": false,
+		 "description": "+40% move speed / -30% gold gain",
+		 "effect": {"speed_mult": 1.4, "gold_mult": 0.7}},
+		{"name": "Iron Skin",     "cost": 50, "is_curse": true, "persistent": true,
+		 "description": "+40% max HP / -20% ATK",
+		 "effect": {"max_hp_mult": 1.4, "atk_mult": 0.8}},
+	]
+	return curse_variants[checkpoint_tier % curse_variants.size()]
 
 func show_menu(is_mid_wave: bool = false):
 	active = true
@@ -237,15 +285,15 @@ func _buy_item(index: int):
 		purchase_flash_pos = rect.position + rect.size / 2.0
 
 func _get_current_items() -> Array:
+	# Phase 5.3: Apply checkpoint tier filter to all tabs
+	var raw: Array = []
 	match current_tab:
-		0: return BuildingData.get_all_buildings()
+		0: raw = BuildingData.get_all_buildings()
 		1:
-			var items: Array = []
 			for t in UnitData.get_all_types():
-				items.append(UnitData.get_stats(t))
-			return items
-		2: return EquipmentData.get_all_equipment()
-	return []
+				raw.append(UnitData.get_stats(t))
+		2: raw = EquipmentData.get_all_equipment()
+	return _filter_items_by_tier(raw)
 
 func _get_item_rect(index: int) -> Rect2:
 	var col = index % 3

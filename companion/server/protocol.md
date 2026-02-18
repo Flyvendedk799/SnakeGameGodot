@@ -59,6 +59,8 @@ Rate-limited response:
   - `{ type, state }`, `state` string (1..64 chars)
 - `ping`
   - `{ type, timestamp }`, `timestamp` integer `>= 0`
+- `ping_request`
+  - `{ type, x, y }`, `x/y` in `[0,1]` — companion taps minimap to ping "look here"
 
 ### Server -> Companion/Game
 
@@ -98,6 +100,12 @@ Rate-limited response:
   - `{ type, state }`
 - `pong`
   - `{ type, timestamp }`
+- `ping_request`
+  - `{ type, x, y }` — relayed from companion to game
+- `ping_ack`
+  - `{ type, x, y }` — optional; game to companion
+- `wave_summary`
+  - `{ type, kills, supplies, mark_strike, supply_chain, emp_followup, mega_strikes }` — game to companion after each wave
 
 ## Server enforcement notes
 

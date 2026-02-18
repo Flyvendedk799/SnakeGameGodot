@@ -77,6 +77,22 @@ var _floor_fill_rects: Array[Rect2] = []
 var _ceiling_fill_rects: Array[Rect2] = []
 var _wall_fill_rects: Array[Rect2] = []
 
+# Phase 3.2: Alternate route path type per platform ("main" | "high" | "low")
+var _platform_path_types: Array = []  # Parallel to platform_rects
+
+# Phase 2.1: Grass bend - cached player position for proximity bending
+var _player_pos: Vector2 = Vector2.ZERO
+# Phase 2.3: Water ripples [{pos, timer, max_timer}]
+var _ripples: Array = []
+# Phase 5.2: Lava bubbles [{x, y, phase, radius}]
+var _lava_bubbles: Array = []
+# Phase 2.4: Crack/stain decals [{x, y, type, seed}]
+var _decor_cracks: Array = []
+# Phase 3.1: Destructible wall nodes
+var _destructible_walls: Array = []   # Array of LevelDestructible nodes
+# Phase 3.3: Level lock nodes
+var _level_locks: Array = []
+
 func setup(game_ref, level_id: int):
 	game = game_ref
 	level_config = LinearMapConfig.get_level(level_id)
@@ -123,6 +139,8 @@ func _setup_from_config():
 	_build_chain_links()
 	_build_procedural_decor()
 	_build_terrain_fill()  # AAA upgrade - fill gaps for complete maps
+	_build_destructible_walls()
+	_build_level_locks()
 
 	# Load procedural terrain textures for current theme
 	var theme = level_config.get("theme", "grass")
@@ -152,6 +170,97 @@ func _build_chain_links():
 	# Only use chain links explicitly placed in level (no procedural pit placement)
 	for cl in level_config.get("chain_links", []):
 		chain_links.append(Vector2(float(cl.get("x", 0)), float(cl.get("y", 0))))
+
+## Phase 3.1: Build destructible wall nodes from config
+func _build_destructible_walls():
+	# Remove any existing destructible walls
+	for dw in _destructible_walls:
+		if is_instance_valid(dw):
+			dw.queue_free()
+	_destructible_walls.clear()
+
+	var walls_cfg: Array = level_config.get("destructible_walls", [])
+	for cfg in walls_cfg:
+		var dw = LevelDestructible.new()
+		dw.hp          = int(cfg.get("hp", 30))
+		dw.max_hp      = dw.hp
+		dw.width       = float(cfg.get("w", 32))
+		dw.height      = float(cfg.get("h", 64))
+		dw.loot_gold   = int(cfg.get("loot_gold", 20))
+		dw.key_drop_chance = float(cfg.get("key_drop_chance", 0.25))
+		dw.passage_type = str(cfg.get("passage_type", "secret_passage"))
+		# Theme-based wall color
+		var theme = level_config.get("theme", "grass")
+		match theme:
+			"cave":    dw.color = Color8(80, 70, 85)
+			"lava":    dw.color = Color8(100, 55, 40)
+			"sky":     dw.color = Color8(140, 150, 165)
+			"summit":  dw.color = Color8(145, 150, 160)
+			"ice":     dw.color = Color8(155, 180, 200)
+			_:         dw.color = Color8(110, 95, 75)
+
+		dw.position = Vector2(float(cfg.get("x", 0)), float(cfg.get("y", 360)))
+		# Wire destroyed signal — remove obstacle_rect when broken
+		dw.destroyed.connect(_on_destructible_destroyed.bind(dw))
+		add_child(dw)
+		_destructible_walls.append(dw)
+		# Add collision rect so enemies/player can't pass
+		obstacle_rects.append(dw.get_collision_rect())
+
+## Phase 3.3: Build level lock nodes from config
+func _build_level_locks():
+	for lk in _level_locks:
+		if is_instance_valid(lk):
+			lk.queue_free()
+	_level_locks.clear()
+
+	var locks_cfg: Array = level_config.get("locks", [])
+	for cfg in locks_cfg:
+		var lk = LevelLock.new() if ClassDB.class_exists("LevelLock") else null
+		if lk == null:
+			continue
+		lk.position = Vector2(float(cfg.get("x", 0)), float(cfg.get("y", 360)))
+		lk.required_keys = int(cfg.get("required_keys", 1))
+		lk.gate_width  = float(cfg.get("w", 48))
+		lk.gate_height = float(cfg.get("h", 120))
+		add_child(lk)
+		_level_locks.append(lk)
+		var gate_rect = Rect2(lk.position.x - lk.gate_width * 0.5,
+			lk.position.y - lk.gate_height, lk.gate_width, lk.gate_height)
+		obstacle_rects.append(gate_rect)
+		# Remove collision when gate opens
+		lk.unlocked.connect(_on_level_lock_unlocked.bind(gate_rect))
+
+func _on_level_lock_unlocked(_gate_node: LevelLock, gate_rect: Rect2):
+	"""Remove gate's obstacle_rect once it finishes opening."""
+	for i in range(obstacle_rects.size()):
+		if obstacle_rects[i].is_equal_approx(gate_rect):
+			obstacle_rects.remove_at(i)
+			break
+
+func _on_destructible_destroyed(wall: LevelDestructible):
+	"""Remove wall's obstacle_rect so player can pass through."""
+	var wall_rect = wall.get_collision_rect()
+	for i in range(obstacle_rects.size()):
+		if obstacle_rects[i].is_equal_approx(wall_rect):
+			obstacle_rects.remove_at(i)
+			break
+	_destructible_walls.erase(wall)
+
+## Phase 3.1: Call this from player dash/ground-pound handling
+func try_dash_break_walls(pos: Vector2, vel: Vector2, game_ref) -> bool:
+	"""Returns true if a wall was broken at pos. Player dash: horizontal vel > 350."""
+	var broken = false
+	for dw in _destructible_walls.duplicate():  # Duplicate to allow safe removal
+		if not is_instance_valid(dw) or dw.is_destroyed:
+			continue
+		var r = dw.get_collision_rect()
+		if r.has_point(pos) or r.has_point(pos + Vector2(vel.normalized().x * 18, 0)):
+			var hit_type = "ground_pound" if vel.y > 300 else "dash"
+			var damage = 30 if hit_type == "ground_pound" else 15
+			dw.take_damage(damage, game_ref, hit_type)
+			broken = true
+	return broken
 
 func _build_procedural_decor():
 	_decor_rocks.clear()
@@ -220,6 +329,42 @@ func _build_procedural_decor():
 			"explicit": true
 		})
 
+	# Phase 2.4: Crack/stain decal overlays at floor corners (vary by theme)
+	_decor_cracks.clear()
+	var crack_types = {
+		"cave":   ["crack_v", "stain_dark", "crack_h"],
+		"lava":   ["scorch", "crack_v", "scorch"],
+		"summit": ["ice_crack", "frost", "ice_crack"],
+		"ice":    ["ice_crack", "frost", "ice_crack"],
+		"sky":    ["chip", "chip", "chip"],
+		"default": ["crack_v", "crack_h", "stain_moss"],
+	}
+	var ctypes = crack_types.get(theme, crack_types["default"]) if crack_types.has(theme) else crack_types["default"]
+	for rect in floor_rects:
+		# Left corner crack
+		if rng.randf() < 0.65:
+			_decor_cracks.append({"x": rect.position.x + rng.randf_range(4, 28), "y": rect.position.y + rng.randf_range(2, 12), "type": ctypes[0], "seed": rng.randi()})
+		# Right corner crack
+		if rng.randf() < 0.60:
+			_decor_cracks.append({"x": rect.position.x + rect.size.x - rng.randf_range(4, 30), "y": rect.position.y + rng.randf_range(2, 12), "type": ctypes[2], "seed": rng.randi()})
+		# Mid-floor stains (sparse)
+		var stain_count = int(rect.size.x / 200)
+		for _s in range(stain_count):
+			_decor_cracks.append({"x": rect.position.x + rng.randf_range(40, rect.size.x - 40), "y": rect.position.y + rng.randf_range(0, 8), "type": ctypes[1], "seed": rng.randi()})
+
+	# Phase 5.2: Lava bubbles - built once in pit areas for lava theme
+	_lava_bubbles.clear()
+	if theme == "lava":
+		for pit in _get_pit_rects():
+			var bubble_count = int(pit.size.x / 60) + 3
+			for _b in range(bubble_count):
+				_lava_bubbles.append({
+					"x": pit.position.x + rng.randf_range(10, pit.size.x - 10),
+					"y": pit.position.y + rng.randf_range(pit.size.y * 0.4, pit.size.y - 8),
+					"phase": rng.randf_range(0, TAU),
+					"radius": rng.randf_range(5.0, 14.0)
+				})
+
 func _build_terrain_fill():
 	"""AAA Upgrade: Fill gaps between platforms and level bounds for complete maps."""
 	_floor_fill_rects.clear()
@@ -271,6 +416,7 @@ func _build_collision():
 	platform_rects.clear()
 	platform_collision_rects.clear()
 	obstacle_rects.clear()
+	_platform_path_types.clear()
 	
 	# Explicit floor segments (hand-crafted geometry - pits, elevated walkways)
 	var floor_segments = level_config.get("floor_segments", [])
@@ -313,6 +459,7 @@ func _build_collision():
 		else:
 			full_rect = Rect2(x, y, w, h)
 		platform_rects.append(full_rect)
+		_platform_path_types.append(str(p.get("path_type", "main")))
 		# Collision: align to visual walkable surface (per-platform surface_fraction for different sprites)
 		if use_sprite_surface:
 			var frac = float(p.get("surface_fraction", default_frac))
@@ -617,6 +764,13 @@ func get_zone_gold_mult(pos: Vector2) -> float:
 				return mult
 	return 1.0
 
+# Phase 3.2: Alternate route path type accent colors (used in _draw)
+const PATH_ACCENT: Dictionary = {
+	"high": Color(1.0, 0.85, 0.2, 0.80),  # Gold edge — high/risky route
+	"low":  Color(0.3, 0.85, 0.7, 0.70),  # Teal edge — low/secret route
+	"main": Color(0, 0, 0, 0),             # No accent for main path
+}
+
 # Theme-based colors: [floor_fill, floor_edge, platform_fill, platform_top, platform_shadow, decor_accent]
 const THEME_COLORS = {
 	"grass": [Color8(75, 95, 55), Color8(55, 75, 40), Color8(140, 115, 80), Color8(175, 145, 100), Color8(45, 55, 35), Color8(85, 140, 75)],
@@ -771,6 +925,18 @@ func _draw():
 		draw_rect(Rect2(rect.position.x, rect.position.y, rect.size.x, edge_h), floor_edge.lightened(0.12))
 		# Edge highlight line
 		draw_line(Vector2(rect.position.x, rect.position.y), Vector2(rect.position.x + rect.size.x, rect.position.y), floor_edge.lightened(0.3), 1.5)
+
+		# 2.5D: Depth recession gradient on floor surface — top of rect is far, darkens slightly
+		# Simulates the ground plane receding away from the viewer (Hollow Knight / Shantae style)
+		var grad_steps = 6
+		var grad_zone = minf(rect.size.y * 0.45, 60.0)
+		for gi in range(grad_steps):
+			var t = float(gi) / float(grad_steps)
+			var fog_alpha = t * t * 0.22   # quadratic: subtle at front, stronger at back
+			var gy = rect.position.y + t * grad_zone
+			var gh = grad_zone / float(grad_steps) + 1.0
+			draw_rect(Rect2(rect.position.x, gy, rect.size.x, gh),
+				Color(0.05, 0.08, 0.18, fog_alpha))
 		# Left/right vertical edges (for segmented floors)
 		draw_rect(Rect2(rect.position.x, rect.position.y, 6, rect.size.y), floor_edge.darkened(0.1))
 		draw_rect(Rect2(rect.position.x + rect.size.x - 6, rect.position.y, 6, rect.size.y), floor_edge.darkened(0.1))
@@ -778,13 +944,38 @@ func _draw():
 		# Edge detail along top (grass tufts, rocks, crystals by theme)
 		var rng2 = RandomNumberGenerator.new()
 		rng2.seed = int(rect.position.x) * 31 + int(rect.position.y)
-		for _j in range(int(rect.size.x / 40) + 1):
+		# Phase 2.4: 1.5x grass density (every 27px instead of 40px)
+		var blade_spacing = 27 if theme == "grass" else 40
+		for _j in range(int(rect.size.x / blade_spacing) + 1):
 			var gx = rect.position.x + rng2.randf_range(8, rect.size.x - 8)
 			var gy = rect.position.y + rng2.randf_range(0, 5)
 			match theme:
 				"grass":
 					var gh = rng2.randf_range(6, 14)
-					draw_line(Vector2(gx, gy), Vector2(gx + rng2.randf_range(-3, 3), gy - gh), pal[5], 1.5)
+					# Phase 2.1: Grass sway + player-proximity bend
+					var tuft_seed = float(rng2.randi() % 1000) * 0.001
+					# Phase 2.4: Primary + secondary wind layer (cos offset)
+					var idle_sway_x = sin(tuft_seed * TAU + anim_time * 2.3) * 2.0 \
+									 + cos(tuft_seed * TAU * 1.7 + anim_time * 1.2) * 1.5
+					var tuft_pos = Vector2(gx, gy)
+					var dist_to_player = _player_pos.distance_to(tuft_pos)
+					var bend_x = 0.0
+					if dist_to_player < 80.0:
+						var bend_strength = 1.0 - clamp(dist_to_player / 80.0, 0.0, 1.0)
+						var bend_dir = sign(tuft_pos.x - _player_pos.x) if tuft_pos.x != _player_pos.x else 1.0
+						bend_x = bend_dir * bend_strength * gh * 0.45
+					var tip_x = gx + idle_sway_x + bend_x
+					var tip_y = gy - gh
+					draw_line(Vector2(gx, gy), Vector2(tip_x, tip_y), pal[5], 1.5)
+					# Darker base blade
+					draw_line(Vector2(gx, gy), Vector2(gx + (tip_x - gx) * 0.5, gy - gh * 0.5), pal[5].darkened(0.2), 1.5)
+					# Phase 2.4: Secondary shorter blade for depth layering
+					if rng2.randf() < 0.55:
+						var gh2 = gh * rng2.randf_range(0.45, 0.75)
+						var gx2 = gx + rng2.randf_range(-5.0, 5.0)
+						var sway2 = sin(tuft_seed * TAU * 2.1 + anim_time * 1.9) * 1.2
+						var tip2_x = gx2 + sway2 * 0.6 + bend_x * 0.5
+						draw_line(Vector2(gx2, gy), Vector2(tip2_x, gy - gh2), pal[5].darkened(0.12), 1.0)
 				"cave":
 					draw_rect(Rect2(gx - 2, gy - 6, 4, 6), floor_edge.lightened(0.1))
 				"summit", "ice":
@@ -809,11 +1000,13 @@ func _draw():
 				draw_rect(Rect2(cx - 2, top, 4, pillar_h * 0.3), Color8(130, 115, 95, 200))
 
 	# Platforms - platform1.png sprite (1:1 fit) or fallback to procedural
-	for rect in platform_rects:
+	for _pi in range(platform_rects.size()):
+		var rect = platform_rects[_pi]
 		var px = rect.position.x
 		var py = rect.position.y
 		var pw = rect.size.x
 		var ph = rect.size.y
+		var path_type: String = _platform_path_types[_pi] if _pi < _platform_path_types.size() else "main"
 
 		if platform_sprite:
 			# Draw sprite at native size - no procedural shadow, image has its own shading
@@ -853,6 +1046,14 @@ func _draw():
 			# Snow accumulation on platform tops
 			draw_rect(Rect2(px, py - 2, pw, 4), Color(0.95, 0.98, 1.0, 0.7))
 			draw_rect(Rect2(px + 4, py - 4, pw - 8, 3), Color(1, 1, 1, 0.5))
+
+		# Phase 3.2: Alternate route accent edge (2px glowing top border)
+		var path_accent: Color = PATH_ACCENT.get(path_type, Color(0, 0, 0, 0))
+		if path_accent.a > 0.01:
+			draw_rect(Rect2(px + 2, py, pw - 4, 2), path_accent)
+			# Small bracket markers at corners to indicate route type
+			draw_rect(Rect2(px, py - 2, 8, 4), path_accent)
+			draw_rect(Rect2(px + pw - 8, py - 2, 8, 4), path_accent)
 
 	# AAA Visual Overhaul Phase 7: Re-enable lighting with toon quantization
 	if lighting_system and terrain_normal:
@@ -970,6 +1171,44 @@ func _draw():
 		# Rope wrap / barnacle accent
 		draw_rect(Rect2(ptx, pty + pt.h * 0.6, pt.w, 4), Color8(90, 85, 75))
 
+	# Phase 2.4: Crack / stain decals at floor surface corners
+	var crack_col = Color(0.0, 0.0, 0.0, 0.18)
+	var stain_col = Color(0.05, 0.08, 0.02, 0.22)
+	for cr in _decor_cracks:
+		var cx = float(cr.x)
+		var cy = float(cr.y)
+		var ctype = str(cr.type)
+		match ctype:
+			"crack_v":
+				# Vertical crack line with fork
+				draw_line(Vector2(cx, cy), Vector2(cx + 2, cy + 12), crack_col, 1.2)
+				draw_line(Vector2(cx + 2, cy + 12), Vector2(cx + 4, cy + 20), crack_col, 1.0)
+				draw_line(Vector2(cx + 2, cy + 12), Vector2(cx - 2, cy + 18), crack_col, 0.8)
+			"crack_h":
+				# Horizontal crack
+				draw_line(Vector2(cx, cy + 4), Vector2(cx + 22, cy + 5), crack_col, 1.1)
+				draw_line(Vector2(cx + 8, cy + 5), Vector2(cx + 14, cy + 8), crack_col, 0.8)
+			"stain_dark", "stain_moss":
+				# Irregular stain patch
+				draw_rect(Rect2(cx - 8, cy, 16, 5), stain_col)
+				draw_rect(Rect2(cx - 5, cy + 2, 10, 4), stain_col)
+			"scorch":
+				# Lava scorch mark
+				draw_rect(Rect2(cx - 10, cy, 20, 6), Color(0.0, 0.0, 0.0, 0.28))
+				draw_circle(Vector2(cx, cy + 3), 4.0, Color(0.25, 0.08, 0.02, 0.35))
+			"ice_crack":
+				# Ice crack - thin and angular
+				draw_line(Vector2(cx, cy), Vector2(cx + 8, cy + 6), Color(0.8, 0.9, 1.0, 0.35), 1.0)
+				draw_line(Vector2(cx + 8, cy + 6), Vector2(cx + 16, cy + 3), Color(0.8, 0.9, 1.0, 0.25), 0.8)
+			"frost":
+				# Frost patch
+				draw_rect(Rect2(cx - 7, cy, 14, 4), Color(0.85, 0.92, 1.0, 0.30))
+			"chip":
+				# Small chip mark
+				draw_rect(Rect2(cx - 3, cy, 6, 4), crack_col)
+			_:
+				draw_line(Vector2(cx, cy), Vector2(cx + 6, cy + 8), crack_col, 1.0)
+
 	# Chain links - grapplable swing points in pits (recovery mechanic)
 	var chain_metal = Color8(70, 75, 85)
 	var chain_highlight = Color8(100, 105, 115)
@@ -1007,3 +1246,71 @@ func _draw():
 	draw_rect(goal_rect, Color8(255, 235, 100), false, 4.0)
 	var goal_pulse = 0.8 + 0.2 * sin(anim_time * 3.0)
 	draw_string(font, goal_rect.position + Vector2(goal_rect.size.x / 2 - 18, goal_rect.size.y / 2 + 6), "GOAL", HORIZONTAL_ALIGNMENT_CENTER, 32, 18, Color(1, 1, 0.9, goal_pulse))
+
+	# Phase 5.2: Lava bubbles - animated pulsing circles in lava pits
+	if theme == "lava":
+		for bubble in _lava_bubbles:
+			var scale = 0.3 + 0.7 * (sin(anim_time * 3.0 + bubble.phase) * 0.5 + 0.5)
+			var r = bubble.radius * scale
+			var alpha = 0.35 + 0.25 * (sin(anim_time * 2.5 + bubble.phase + 1.2) * 0.5 + 0.5)
+			draw_circle(Vector2(bubble.x, bubble.y), r, Color(0.85, 0.35, 0.08, alpha))
+			# Bright highlight on top
+			draw_circle(Vector2(bubble.x - r * 0.3, bubble.y - r * 0.3), r * 0.25, Color(1.0, 0.65, 0.2, alpha * 0.6))
+
+	# Phase 5.3: Cave crystal glow - color pulse on platform prop crystals (cave theme)
+	if theme == "cave":
+		for prop in _decor_props:
+			var px2 = prop.x
+			var py2 = prop.y
+			var seed_f = float(prop.get("seed", 0) % 1000) * 0.001
+			var glow_alpha = 0.3 + 0.2 * sin(anim_time * 2.0 + seed_f * TAU)
+			draw_circle(Vector2(px2, py2 - 8), 7.0, Color(0.6, 0.8, 1.0, glow_alpha))
+
+	# Phase 2.3: Water/pit edge ripples (grass theme)
+	if theme == "grass":
+		var i2 = _ripples.size() - 1
+		while i2 >= 0:
+			var ripple = _ripples[i2]
+			var t_r = 1.0 - (ripple.timer / ripple.max_timer)
+			var r_radius = lerp(4.0, 40.0, t_r)
+			var r_alpha = (1.0 - t_r) * 0.5
+			draw_arc(ripple.pos, r_radius, 0, TAU, 20, Color(0.5, 0.8, 0.9, r_alpha), 1.5)
+			draw_arc(ripple.pos, r_radius * 0.55, 0, TAU, 14, Color(0.5, 0.8, 0.9, r_alpha * 0.5), 1.0)
+			i2 -= 1
+
+func update_effects(delta: float):
+	"""Phase 2.3+3.3: Update ripple timers, level locks, and other animated map elements."""
+	# Phase 3.3: Update level lock animations / proximity checks
+	for lk in _level_locks:
+		if is_instance_valid(lk):
+			lk.update(delta, game)
+	var theme = level_config.get("theme", "grass")
+
+	# Decay ripple timers
+	var i = _ripples.size() - 1
+	while i >= 0:
+		_ripples[i].timer -= delta
+		if _ripples[i].timer <= 0:
+			_ripples.remove_at(i)
+		i -= 1
+
+	# Spawn ripples when player lands near drains (grass theme only)
+	if theme == "grass" and game and game.get("player_node") and game.player_node:
+		var player = game.player_node
+		var was_grounded = player.get("was_on_ground")
+		var is_grounded = player.get("is_on_ground")
+		if is_grounded and was_grounded == false:
+			# Player just landed - check pipe proximity
+			for pipe in _decor_pipes:
+				var pipe_pos = Vector2(pipe.x, pipe.y)
+				if player.position.distance_to(pipe_pos) < 40.0:
+					emit_ripple(player.position + Vector2(0, 20))
+					break
+
+func emit_ripple(world_pos: Vector2, duration: float = 0.7):
+	"""Phase 2.3: Spawn a concentric ripple animation at position."""
+	_ripples.append({
+		"pos": world_pos,
+		"timer": duration,
+		"max_timer": duration
+	})

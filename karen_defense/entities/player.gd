@@ -73,8 +73,8 @@ var grapple_buffer_timer: float = 0.0
 const GRAVITY = 900.0
 const JUMP_FORCE = -380.0
 const DROP_THROUGH_DURATION = 0.2
-const COYOTE_TIME: float = 0.14  # AAA Upgrade: Increased for more forgiving platforming
-const JUMP_BUFFER_TIME: float = 0.20  # AAA Upgrade: Increased for more forgiving input
+const COYOTE_TIME: float = 0.18  # Phase 6.3: Extended for more forgiving grapple-to-jump
+const JUMP_BUFFER_TIME: float = 0.22  # Phase 6.3: Extended buffer window
 const AIR_CONTROL_MULT: float = 0.96  # AAA Upgrade: Increased for snappier mid-air control
 
 # Double jump
@@ -179,6 +179,8 @@ const DASH_SPEED = 650.0
 const DASH_DURATION = 0.16
 const DASH_COOLDOWN_TIME = 0.35
 var dash_trail: Array = []  # For afterimage effect
+# Phase 4.4: Node-based afterimage trail system
+var dash_afterimage = null
 # AAA Upgrade: Momentum-based dash
 var current_dash_speed: float = DASH_SPEED
 var enemies_dashed_through: int = 0
@@ -320,6 +322,11 @@ func _ready():
 		sprite_texture = load("res://assets/WilliamPlayer.png")
 	hammer_texture = load("res://assets/hammer.png")
 	grapple_texture = load("res://assets/grapple.png")
+	# Phase 4.4: Create dash afterimage trail node
+	if ClassDB.class_exists("DashAfterimage"):
+		dash_afterimage = DashAfterimage.new()
+		dash_afterimage.name = "DashAfterimage"
+		add_child(dash_afterimage)
 	weapon_configs["ak47"] = {
 		"texture": load("res://assets/rangedak.png"),
 		"slot": "right_hand",
@@ -507,6 +514,16 @@ func update_player(delta: float, game):
 		_setup_player_shader_visual(game)
 	if _use_shader_visual and character_visual:
 		character_visual.update_visual(delta)
+		# 2.5D: Depth atmosphere fog — player tinted by screen depth
+		if in_sideview_mode and ClassDB.class_exists("DepthPlanes"):
+			var depth = DepthPlanes.get_depth_factor(position.y)
+			var fog = (1.0 - depth) * 0.25
+			character_visual.modulate = Color(
+				1.0 - fog * 0.12,
+				1.0 - fog * 0.05,
+				1.0 + fog * 0.10,
+				character_visual.modulate.a
+			)
 	if has_dino_mount:
 		dino_anim_time += delta
 	_handle_grapple(delta, game)
@@ -560,11 +577,11 @@ func _handle_grapple(delta, game):
 		# Release grapple on re-press or jump (during swing)
 		if grapple_swing_mode and grapple_pull_started:
 			if Input.is_action_just_pressed(action_prefix + "grapple") or Input.is_action_just_pressed(action_prefix + "move_up"):
-				# Launch off with current tangent velocity
+				# Phase 6.3: Release boost — catapult 1.5x in swing direction for satisfying launch
 				var to_anchor = grapple_target - position
 				var rope_dir = to_anchor.normalized()
 				var tangent = Vector2(-rope_dir.y, rope_dir.x)
-				var tangent_vel = tangent * grapple_swing_velocity * grapple_rope_length
+				var tangent_vel = tangent * grapple_swing_velocity * grapple_rope_length * 1.5
 				velocity = tangent_vel
 				is_grappling = false
 				grapple_swing_mode = false
@@ -753,7 +770,7 @@ func _handle_movement(delta, game):
 
 		# Add dash trail ghost
 		if dash_trail.size() == 0 or position.distance_to(dash_trail[-1].pos) > 8.0:
-			dash_trail.append({"pos": position, "alpha": 0.5, "angle": facing_angle})
+			dash_trail.append({"pos": position, "alpha": 0.7, "angle": facing_angle})  # Phase 4.4: 0.7→0
 		var bound_w = game.map.SCREEN_W if game else 1280.0
 		var bound_h = game.map.SCREEN_H if game else 720.0
 		position.x = clampf(position.x, 15, bound_w - 15)
@@ -898,6 +915,19 @@ func _setup_player_shader_visual(game):
 	sprite_animator.set_sprite_frames(frames)
 	animation_frames_loaded = true
 
+	# Phase 3.1: Wire animation event callbacks
+	sprite_animator.on_land_frame = func():
+		if character_visual:
+			character_visual.squash_land()
+		if game and game.get("audio_manager"):
+			game.audio_manager.play_at("res://audio/sfx/land.ogg", position, -6.0, 1.0)
+	sprite_animator.on_dash_start_frame = func():
+		if character_visual:
+			character_visual.squash_stretch_scale = Vector2(1.4, 0.65)
+	sprite_animator.on_strike_frame = func():
+		if character_visual:
+			character_visual.squash_strike()
+
 	print("[Player] ✅ CharacterVisual system initialized")
 	print("[Player] _use_shader_visual = %s" % _use_shader_visual)
 	print("[Player] Animation frames: %s" % SpriteFrameLoader.get_frame_status())
@@ -953,7 +983,10 @@ func _handle_movement_sideview(delta: float, game):
 			velocity = result.velocity
 
 		if dash_trail.size() == 0 or position.distance_to(dash_trail[-1].pos) > 8.0:
-			dash_trail.append({"pos": position, "alpha": 0.5, "angle": facing_angle})
+			dash_trail.append({"pos": position, "alpha": 0.7, "angle": facing_angle})  # Phase 4.4: 0.7→0
+		# Phase 3.1: Try to break destructible walls during dash
+		if game and game.map and game.map.has_method("try_dash_break_walls"):
+			game.map.try_dash_break_walls(position, velocity, game)
 		# Clamp to map bounds during dash
 		position.x = clampf(position.x, 30, game.map.level_width - 30)
 		position.y = clampf(position.y, 30, game.map.level_height - 30)
@@ -1088,6 +1121,9 @@ func _handle_movement_sideview(delta: float, game):
 			var config = AnimationConfig.get_config()
 			squash_factor = config.jump_launch_squash
 			jump_state = "launch"
+			# Phase 3.2: Stretch visual on jump
+			if _use_shader_visual and character_visual:
+				character_visual.squash_jump()
 
 			# AAA Upgrade: Momentum preservation and sprint jump boost
 			horizontal_momentum = velocity.x
@@ -1216,6 +1252,9 @@ func _handle_movement_sideview(delta: float, game):
 	if is_ground_pounding and is_on_ground and not was_on_ground:
 		is_ground_pounding = false
 		squash_factor = 0.4  # Massive squash on impact
+		# Phase 3.1: Ground pound breaks destructible walls
+		if game and game.map and game.map.has_method("try_dash_break_walls"):
+			game.map.try_dash_break_walls(position, velocity, game)
 
 		# Devastating screen shake and chromatic aberration
 		if game.has_method("start_shake"):
@@ -1275,6 +1314,10 @@ func _handle_movement_sideview(delta: float, game):
 		else:
 			squash_factor = config.landing_squash_heavy
 
+		# Phase 3.2: Trigger CharacterVisual spring squash on land
+		if _use_shader_visual and character_visual:
+			character_visual.squash_land()
+
 		landing_recovery_timer = config.landing_recovery_time
 		landing_target_squash = 1.0
 
@@ -1306,6 +1349,11 @@ func _handle_movement_sideview(delta: float, game):
 			# Add dust ring on heavier impacts
 			if impact_strength > 0.5:
 				game.particles.emit_ring(position.x, position.y + BODY_RADIUS, dust_color.lightened(0.2), int(8 * impact_strength))
+			# Phase 2.2: Wide soft dust cloud on hard landings (velocity.y > 300)
+			if impact_strength > 0.75:
+				game.particles.emit_burst(position.x, position.y + BODY_RADIUS, Color8(200, 185, 160, 200), int(14 * impact_strength))
+				game.particles.emit_burst(position.x - 16, position.y + BODY_RADIUS, Color8(190, 175, 150, 160), 6)
+				game.particles.emit_burst(position.x + 16, position.y + BODY_RADIUS, Color8(190, 175, 150, 160), 6)
 
 func _handle_facing():
 	# Right stick aiming (controller)
@@ -1586,6 +1634,9 @@ func _handle_dash(delta, game):
 		dash_timer -= delta
 		if dash_timer <= 0:
 			is_dashing = false
+			# Phase 4.4: Stop afterimage ghost trail
+			if dash_afterimage:
+				dash_afterimage.stop_trail()
 			# AAA Upgrade: Extended i-frames if dashed through 2+ enemies
 			var base_iframes = 0.05
 			if enemies_dashed_through >= 2:
@@ -1644,10 +1695,12 @@ func _handle_dash(delta, game):
 		squash_factor = 1.5  # Stretch in dash direction
 		enemies_dashed_through = 0  # Reset counter at dash start
 
-		# AAA Upgrade: Trigger bloom effect on dash (stronger for sprint dash)
+		# Phase 4.3: Dash glow — bright bloom + post-process boost (no extra Light2Ds)
 		if game.has_method("trigger_bloom"):
 			var bloom_strength = 1.5 if current_dash_speed >= 750 else 1.0
 			game.trigger_bloom(bloom_strength)
+		if game.has_method("trigger_bloom_boost"):
+			game.trigger_bloom_boost(0.6 if current_dash_speed >= 750 else 0.35)
 		# AAA Upgrade: Camera zoom pulse on dash
 		if game.has_method("trigger_camera_zoom_pulse"):
 			game.trigger_camera_zoom_pulse(-0.8)
@@ -1662,12 +1715,17 @@ func _handle_dash(delta, game):
 			var preserved_velocity = velocity * 0.4  # Preserve 40% of air momentum
 			velocity = preserved_velocity + dash_direction * current_dash_speed * 0.3
 		is_repairing = false
-		# Dash particles (more for sprint dash)
+		# Phase 4.3: Dash particles — bright cyan-white for bloom pickup
 		if game:
 			var particle_count = 10 if current_dash_speed >= 750 else 6
-			game.particles.emit_directional(position.x, position.y, -dash_direction, Color8(150, 200, 255), particle_count)
+			var dash_glow_color = Color8(220, 240, 255) if current_dash_speed >= 750 else Color8(180, 220, 255)
+			game.particles.emit_directional(position.x, position.y, -dash_direction, dash_glow_color, particle_count)
 		if game and game.sfx:
 			game.sfx.play_dash()
+		# Phase 4.4: Start afterimage ghost trail
+		if dash_afterimage:
+			var trail_tint = Color(0.5, 0.85, 1.0) if current_dash_speed >= 750 else Color(0.35, 0.65, 0.9)
+			dash_afterimage.start_trail(self, trail_tint)
 
 func _handle_grenade(delta, _game):
 	grenade_cooldown = maxf(0, grenade_cooldown - delta)
@@ -2014,31 +2072,39 @@ func apply_skill(skill_id: String, game = null):
 # --- Visual juice helpers ---
 
 func spawn_combo_visual(hit_index: int, hit_position: Vector2):
-	"""AAA Upgrade: Spawn visual trail effect for combo hit."""
-	var trail_data = {}
-	trail_data["pos"] = hit_position
-	trail_data["timer"] = 0.0
-	trail_data["angle"] = facing_angle
-	trail_data["max_time"] = 0.3  # Default value
-
-	match hit_index:
-		0:  # Hit 1: Quick slash - white arc
-			trail_data["type"] = "arc"
-			trail_data["max_time"] = 0.3
-			trail_data["color"] = Color.WHITE
-		1:  # Hit 2: Thrust - yellow line
-			trail_data["type"] = "line"
-			trail_data["max_time"] = 0.4
-			trail_data["color"] = Color.YELLOW
-		2:  # Hit 3: Heavy spin - red vortex
-			trail_data["type"] = "vortex"
-			trail_data["max_time"] = 0.6
-			trail_data["color"] = Color.RED
-		_:  # Fallback
-			trail_data["type"] = "arc"
-			trail_data["color"] = Color.WHITE
-
-	combo_visual_trails.append(trail_data)
+	"""Phase 1.2: Spawn GPU ribbon trail via WeaponTrailManager."""
+	if game and game.get("weapon_trail_manager") and game.weapon_trail_manager:
+		# Compute start/end from position, facing angle and melee range
+		var weapon_dir = Vector2.from_angle(facing_angle)
+		var perp = Vector2(-weapon_dir.y, weapon_dir.x)
+		var arc_half = melee_range * 0.55
+		var trail_start = hit_position - perp * arc_half
+		var trail_end = hit_position + perp * arc_half
+		game.weapon_trail_manager.spawn_weapon_trail(trail_start, trail_end, hit_index)
+	else:
+		# Fallback: keep legacy combo_visual_trails when WeaponTrailManager unavailable
+		var trail_data = {}
+		trail_data["pos"] = hit_position
+		trail_data["timer"] = 0.0
+		trail_data["angle"] = facing_angle
+		match hit_index:
+			0:
+				trail_data["type"] = "arc"
+				trail_data["max_time"] = 0.3
+				trail_data["color"] = Color.WHITE
+			1:
+				trail_data["type"] = "line"
+				trail_data["max_time"] = 0.4
+				trail_data["color"] = Color.YELLOW
+			2:
+				trail_data["type"] = "vortex"
+				trail_data["max_time"] = 0.6
+				trail_data["color"] = Color.RED
+			_:
+				trail_data["type"] = "arc"
+				trail_data["max_time"] = 0.3
+				trail_data["color"] = Color.WHITE
+		combo_visual_trails.append(trail_data)
 
 func _update_combo_visuals(delta: float):
 	"""AAA Upgrade: Update combo visual trail timers."""
@@ -2064,6 +2130,17 @@ func _update_squash(delta: float):
 		var progress = 1.0 - (landing_recovery_timer / config.landing_recovery_time)
 		var ease_progress = AnimationConfig.apply_ease(progress, config.landing_ease)
 		squash_factor = lerpf(squash_factor, landing_target_squash, ease_progress * delta * 20.0)
+
+	# Phase 7: Velocity-based squash/stretch — blend with physics-driven factor
+	if in_sideview_mode and not is_on_ground:
+		# Stretch horizontally when sprinting fast (scale_y squeeze = squash_factor < 1)
+		var speed_stretch = clamp(absf(velocity.x) / 500.0, 0.0, 0.15)
+		# Squash vertically when falling fast (sq < 1 compresses Y, widens X)
+		var fall_squash = clamp(velocity.y / 800.0, 0.0, 0.18)
+		var velocity_sq = 1.0 + speed_stretch - fall_squash
+		# Take max deviation from 1.0 to avoid fighting landing squash
+		if absf(velocity_sq - 1.0) > absf(squash_factor - 1.0):
+			squash_factor = lerpf(squash_factor, velocity_sq, delta * 10.0)
 
 func _update_trail(delta: float):
 	trail_timer += delta
@@ -2178,20 +2255,25 @@ func _draw():
 			var wind_end = offset + Vector2(cos(offset_angle), sin(offset_angle)) * wind_length
 			draw_line(offset, wind_end, Color(0.8, 0.9, 1.0, wind_alpha), 2.0)
 
-	# Draw dash afterimages first (behind everything) - skip if using CharacterVisual
-	if dash_trail.size() > 0 and sprite_texture and not _use_shader_visual:
-		var tex_size = sprite_texture.get_size()
-		var ds = SPRITE_HEIGHT / tex_size.y
-		for ghost in dash_trail:
-			var ghost_offset = ghost.pos - position
-			var g_flip = ghost.angle < -PI / 2.0 or ghost.angle > PI / 2.0
-			var g_fs = -1.0 if g_flip else 1.0
-			draw_set_transform(
-				Vector2(ghost_offset.x, ghost_offset.y - tex_size.y * ds * 0.32),
-				0, Vector2(ds * g_fs * 1.1, ds * 0.9)
-			)
-			draw_texture(sprite_texture, -tex_size / 2.0, Color(0.4, 0.7, 1.0, ghost.alpha))
-		draw_set_transform(Vector2.ZERO, 0, Vector2.ONE)
+	# Phase 4.4: Draw dash afterimages (3-4 fading sprites, alpha 0.7→0)
+	# Works for both sprite_texture and CharacterVisual modes
+	if dash_trail.size() > 0:
+		if sprite_texture and not _use_shader_visual:
+			var tex_size = sprite_texture.get_size()
+			var ds = SPRITE_HEIGHT / tex_size.y
+			for gi in range(dash_trail.size()):
+				var ghost = dash_trail[gi]
+				var ghost_offset = ghost.pos - position
+				var g_flip = ghost.angle < -PI / 2.0 or ghost.angle > PI / 2.0
+				var g_fs = -1.0 if g_flip else 1.0
+				# Phase 4.4: 0.7→0 alpha gradient across 3-4 ghosts
+				var trail_alpha = ghost.alpha * 0.7
+				draw_set_transform(
+					Vector2(ghost_offset.x, ghost_offset.y - tex_size.y * ds * 0.32),
+					0, Vector2(ds * g_fs * 1.1, ds * 0.9)
+				)
+				draw_texture(sprite_texture, -tex_size / 2.0, Color(0.4, 0.7, 1.0, trail_alpha))
+			draw_set_transform(Vector2.ZERO, 0, Vector2.ONE)
 
 	# AAA Upgrade: Draw combo visual trails
 	for trail in combo_visual_trails:
@@ -2522,30 +2604,44 @@ func _draw():
 	if is_attacking_melee:
 		_draw_melee_arc(active_combo)
 
-	# Grapple line visual
+	# Grapple line visual — Phase 6.3: Catmull-Rom spline, 8 segments, gradient alpha
 	if is_grappling:
 		var line_end_world = grapple_target - position
 		var line_end = line_end_world * grapple_line_progress
 		var line_len = line_end.length()
-		# Main grapple line with rope-physics sine wave (guard against zero-length)
-		var line_segments = int(maxf(8, line_len / 12.0))
-		var perp = Vector2.ZERO
+
 		if line_len > 0.1:
-			var line_n = line_end / line_len
-			perp = Vector2(-line_n.y, line_n.x)
-		var prev_seg = Vector2.ZERO
-		var wave_amp = 6.0 * (1.0 - grapple_line_progress) if not grapple_pull_started else 2.0
-		for seg_i in range(1, line_segments + 1):
-			var frac = float(seg_i) / float(line_segments)
-			var base_pt = line_end * frac
-			var wave = sin(frac * PI * 3.0 + idle_time * 20.0) * wave_amp * (1.0 - frac)
-			var seg_pt = base_pt + perp * wave
-			var seg_alpha = 0.8 - frac * 0.3
-			# Glow line
-			draw_line(prev_seg, seg_pt, Color(0.4, 0.8, 1.0, seg_alpha * 0.4), 5.0)
-			# Core line
-			draw_line(prev_seg, seg_pt, Color(0.7, 0.9, 1.0, seg_alpha), 2.5)
-			prev_seg = seg_pt
+			# Phase 6.3: Catmull-Rom spline from player to anchor using 4 control points
+			# p0 = behind player, p1 = player (origin), p2 = anchor, p3 = ahead of anchor
+			var perp_dir = Vector2(-line_end.normalized().y, line_end.normalized().x)
+			var sag = minf(line_len * 0.2, 40.0) * (1.0 - grapple_line_progress * 0.5)  # Gravity sag
+			var p0 = -line_end.normalized() * 30.0  # Behind player
+			var p1 = Vector2.ZERO                   # Player origin
+			var p2 = line_end + perp_dir * sag * 0.3 + Vector2(0, sag)  # Sag point
+			var p3 = line_end + line_end.normalized() * 20.0  # Ahead of anchor
+
+			const CATMULL_SEGS = 8
+			var pts: Array[Vector2] = []
+			for si in range(CATMULL_SEGS + 1):
+				var t = float(si) / float(CATMULL_SEGS)
+				# Catmull-Rom with alpha=0.5
+				var t2 = t * t
+				var t3 = t2 * t
+				var c0 = -t3 + 2.0 * t2 - t
+				var c1 = 3.0 * t3 - 5.0 * t2 + 2.0
+				var c2 = -3.0 * t3 + 4.0 * t2 + t
+				var c3 = t3 - t2
+				pts.append(0.5 * (c0 * p0 + c1 * p1 + c2 * p2 + c3 * p3))
+
+			for si in range(CATMULL_SEGS):
+				var frac = float(si) / float(CATMULL_SEGS)
+				var seg_alpha = lerpf(0.85, 0.25, frac)  # Gradient: opaque at player, fade at anchor
+				var seg_width = lerpf(3.0, 1.0, frac)    # Tapers to anchor
+				# Glow pass
+				draw_line(pts[si], pts[si + 1], Color(0.4, 0.8, 1.0, seg_alpha * 0.4), seg_width + 2.5)
+				# Core pass
+				draw_line(pts[si], pts[si + 1], Color(0.7, 0.9, 1.0, seg_alpha), seg_width)
+
 		# Grapple hook at end
 		if grapple_line_progress > 0.5:
 			draw_circle(line_end, 5.0, Color(0.5, 0.8, 1.0, 0.8))

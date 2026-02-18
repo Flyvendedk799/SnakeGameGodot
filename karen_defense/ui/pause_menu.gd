@@ -5,9 +5,14 @@ var game = null
 var active: bool = false
 var hover_index: int = -1
 var kb_index: int = 0
-var options: Array[String] = ["Resume", "Controls", "Restart", "Quit to Launcher"]
+var options: Array[String] = ["Resume", "Controls", "Companion Mode", "Restart", "Quit to Launcher"]
 var showing_controls: bool = false
+var showing_companion: bool = false
 var controls_scroll: float = 0.0  # For smooth scroll if needed
+var companion_code: String = ""
+var companion_status: String = ""
+var companion_checkbox_rect: Rect2
+var companion_connect_rect: Rect2
 
 func setup(game_ref):
 	game = game_ref
@@ -17,17 +22,21 @@ func show_menu():
 	hover_index = -1
 	kb_index = 0
 	showing_controls = false
+	showing_companion = false
 	controls_scroll = 0.0
+	companion_checkbox_rect = Rect2(490, 340, 24, 24)
+	companion_connect_rect = Rect2(490, 400, 300, 50)
 
 func hide_menu():
 	active = false
 	showing_controls = false
+	showing_companion = false
 	queue_redraw()
 
 func _process(_delta):
 	if not active:
 		return
-	if showing_controls:
+	if showing_controls or showing_companion:
 		queue_redraw()
 		return
 	var mouse = get_global_mouse_position()
@@ -45,9 +54,46 @@ func handle_input(event) -> bool:
 
 	# Controls screen: any back input returns to pause menu
 	if showing_controls:
-		if event.is_action_pressed("ui_back") or event.is_action_pressed("confirm"):
+		if event.is_action_pressed("ui_back") or event.is_action_pressed("confirm") or event.is_action_pressed("pause"):
 			showing_controls = false
 			return true
+		if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+			showing_controls = false
+			return true
+		return true
+
+	# Companion Mode screen
+	if showing_companion:
+		if event.is_action_pressed("ui_back") or event.is_action_pressed("pause"):
+			showing_companion = false
+			return true
+		if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+			var mouse = event.position
+			if companion_checkbox_rect.has_point(mouse):
+				var enabled = game.companion_session == null
+				if game.world_select:
+					game.world_select.companion_enabled = enabled
+				if enabled:
+					game.enable_companion_session()
+				else:
+					game.disable_companion_session()
+				companion_status = ""
+				queue_redraw()
+				return true
+			if companion_connect_rect.has_point(mouse) and companion_code.length() == 6:
+				if game.companion_session:
+					game.companion_session.connect_with_code(companion_code)
+					companion_status = "Connecting..."
+				return true
+		if event is InputEventKey and event.pressed and not event.echo:
+			if event.keycode == KEY_BACKSPACE:
+				companion_code = companion_code.substr(0, companion_code.length() - 1)
+				return true
+			var ch = String.chr(event.unicode).to_upper()
+			if ch.length() == 1 and ("ABCDEFGHIJKLMNPQRSTUVWXYZ23456789".contains(ch)) and companion_code.length() < 6:
+				companion_code += ch
+				return true
+		return true
 		if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
 			showing_controls = false
 			return true
@@ -87,10 +133,16 @@ func _select_option(index: int):
 			game.unpause()
 		1:  # Controls
 			showing_controls = true
-		2:  # Restart
+		2:  # Companion Mode
+			showing_companion = true
+			companion_code = ""
+			companion_status = game.world_select.companion_status if game.world_select else ""
+			if game.companion_session and game.companion_session.is_session_connected():
+				companion_status = "Connected!"
+		3:  # Restart
 			hide_menu()
 			game.restart_game()
-		3:  # Quit to launcher
+		4:  # Quit to launcher
 			get_tree().change_scene_to_file("res://launcher.tscn")
 
 func _get_button_rect(index: int) -> Rect2:
@@ -106,6 +158,9 @@ func _draw():
 
 	if showing_controls:
 		_draw_controls_screen()
+		return
+	if showing_companion:
+		_draw_companion_screen()
 		return
 
 	var font = ThemeDB.fallback_font
@@ -143,6 +198,30 @@ func _draw():
 	# Navigation hint
 	var hint_y = 290 + options.size() * 62.0 + 30
 	draw_string(font, Vector2(370, hint_y), "D-Pad: Navigate  |  Cross/Space: Select  |  Circle/Esc: Resume", HORIZONTAL_ALIGNMENT_CENTER, 540, 11, Color8(130, 130, 155))
+
+func _draw_companion_screen():
+	var font = ThemeDB.fallback_font
+	draw_rect(Rect2(0, 0, 1280, 720), Color8(0, 0, 0, 210))
+	draw_string(font, Vector2(480, 54), "COMPANION MODE", HORIZONTAL_ALIGNMENT_CENTER, 320, 32, Color.WHITE)
+	draw_line(Vector2(480, 62), Vector2(800, 62), Color8(120, 100, 180, 140), 1.0)
+	draw_string(font, Vector2(390, 100), "Enable companion to receive support from a second player (phone/tablet).", HORIZONTAL_ALIGNMENT_CENTER, 500, 14, Color8(180, 175, 200))
+
+	var enabled = game.companion_session != null
+	draw_rect(companion_checkbox_rect, Color8(50, 45, 70))
+	draw_rect(Rect2(companion_checkbox_rect.position.x + 1, companion_checkbox_rect.position.y + 1, companion_checkbox_rect.size.x - 2, companion_checkbox_rect.size.y - 2), Color8(80, 70, 100), false, 1.5)
+	if enabled:
+		draw_rect(Rect2(companion_checkbox_rect.position.x + 6, companion_checkbox_rect.position.y + 6, 12, 12), Color8(100, 220, 140))
+	draw_string(font, Vector2(522, 350), "Enable Companion", HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color8(180, 170, 200))
+
+	if enabled:
+		draw_string(font, Vector2(490, 378), "Enter 6-char code from companion app:", HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color8(180, 170, 200))
+		draw_rect(companion_connect_rect, Color8(60, 55, 80))
+		draw_string(font, Vector2(500, 435), (companion_code + "______").substr(0, 6), HORIZONTAL_ALIGNMENT_LEFT, -1, 22, Color.WHITE)
+		var st = game.world_select.companion_status if game.world_select else companion_status
+		var status_txt = "Connected!" if (game.companion_session and game.companion_session.is_session_connected()) else (st if st else "Connect")
+		draw_string(font, Vector2(500, 458), status_txt, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color8(100, 220, 150))
+
+	draw_string(font, Vector2(430, 540), "Press Esc or Circle to back", HORIZONTAL_ALIGNMENT_CENTER, 420, 14, Color8(160, 155, 185))
 
 func _draw_controls_screen():
 	var font = ThemeDB.fallback_font

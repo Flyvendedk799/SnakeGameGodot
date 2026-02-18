@@ -16,7 +16,19 @@ var bloom_intensity: float = 0.0
 var ambient_particles: Array = []  # Floating dust motes
 var light_rays: Array = []  # Dynamic light shafts
 var ambient_light_pulse: float = 0.0
-const MAX_AMBIENT_PARTICLES = 40
+const MAX_AMBIENT_PARTICLES = 80  # Phase 2.3: Increased from 40 with depth layers
+# Depth layer split: 0=far (small/slow), 1=mid, 2=near (large/fast)
+const DEPTH_COUNTS = [30, 30, 20]  # far, mid, near
+# Theme-tinted particle colors: game.map.theme → color hints
+const THEME_PARTICLE_COLORS = {
+	"grass":   [Color(0.85, 0.95, 0.80, 1.0), Color(0.90, 0.92, 0.88, 1.0)],
+	"cave":    [Color(0.70, 0.75, 0.90, 1.0), Color(0.60, 0.65, 0.80, 1.0)],
+	"lava":    [Color(1.00, 0.70, 0.40, 1.0), Color(1.00, 0.55, 0.25, 1.0)],
+	"ice":     [Color(0.75, 0.90, 1.00, 1.0), Color(0.80, 0.95, 1.00, 1.0)],
+	"sky":     [Color(0.95, 0.95, 1.00, 1.0), Color(0.85, 0.88, 1.00, 1.0)],
+	"summit":  [Color(0.85, 0.90, 0.95, 1.0), Color(0.90, 0.93, 1.00, 1.0)],
+	"default": [Color(0.90, 0.90, 0.95, 1.0), Color(0.88, 0.88, 0.92, 1.0)],
+}
 
 func _ready():
 	_init_ambient_particles()
@@ -158,20 +170,34 @@ func _draw_foreground_framing(vp_size: Vector2):
 
 func _init_ambient_particles():
 	ambient_particles.clear()
-	for i in range(MAX_AMBIENT_PARTICLES):
-		ambient_particles.append({
-			"pos": Vector2(randf_range(0, 1280), randf_range(0, 720)),
-			"velocity": Vector2(randf_range(-8, 8), randf_range(-12, -4)),
-			"size": randf_range(1.0, 3.0),
-			"alpha": randf_range(0.1, 0.3),
-			"phase": randf() * TAU
-		})
+	# Phase 2.3: Depth-layered — far (slow/tiny), mid, near (fast/large)
+	# [depth, size_min, size_max, speed_mult, alpha_min, alpha_max, drift_min, drift_max]
+	var depth_params = [
+		[0, 0.5, 1.2, 0.3,  0.05, 0.12, -4.0,  4.0],
+		[1, 1.2, 2.2, 0.7,  0.10, 0.22, -8.0,  8.0],
+		[2, 2.0, 4.0, 1.4,  0.18, 0.35, -12.0, 12.0],
+	]
+	for d in range(3):
+		var p = depth_params[d]
+		var count = DEPTH_COUNTS[d]
+		for _i in range(count):
+			ambient_particles.append({
+				"pos":      Vector2(randf_range(0, 1280), randf_range(0, 720)),
+				"velocity": Vector2(randf_range(p[6], p[7]),
+				                    randf_range(-14, -3) * p[3]),
+				"size":     randf_range(p[1], p[2]),
+				"alpha":    randf_range(p[4], p[5]),
+				"phase":    randf() * TAU,
+				"depth":    p[0],
+			})
 
 func _update_ambient_particles(delta: float):
 	var vp_size = get_viewport_rect().size
 	for p in ambient_particles:
 		p.pos += p.velocity * delta
-		p.pos.x += sin(game.time_elapsed * 0.5 + p.phase) * 15.0 * delta
+		# Depth-scaled horizontal drift: far layers drift less
+		var drift_scale = lerpf(0.5, 1.5, float(p.depth) / 2.0)
+		p.pos.x += sin(game.time_elapsed * 0.5 + p.phase) * 15.0 * delta * drift_scale
 		if p.pos.x < -10:
 			p.pos.x = vp_size.x + 10
 		elif p.pos.x > vp_size.x + 10:
@@ -180,11 +206,24 @@ func _update_ambient_particles(delta: float):
 			p.pos.y = vp_size.y + 10
 		elif p.pos.y > vp_size.y + 10:
 			p.pos.y = -10
-		p.alpha = lerpf(0.1, 0.3, (sin(game.time_elapsed * 0.4 + p.phase) + 1.0) * 0.5)
+		# Depth-scaled alpha range: near particles are more opaque
+		var a_min = lerpf(0.05, 0.18, float(p.depth) / 2.0)
+		var a_max = lerpf(0.12, 0.35, float(p.depth) / 2.0)
+		p.alpha = lerpf(a_min, a_max, (sin(game.time_elapsed * 0.4 + p.phase) + 1.0) * 0.5)
+
+func _get_theme_particle_color(depth: int) -> Color:
+	var theme = "default"
+	if game and game.get("map") and game.map.get("theme"):
+		theme = game.map.theme
+	var colors = THEME_PARTICLE_COLORS.get(theme, THEME_PARTICLE_COLORS["default"])
+	# depth 0→far color [0], depth 2→near color [1], mid blends
+	var t = float(depth) / 2.0
+	return colors[0].lerp(colors[1], t)
 
 func _draw_ambient_particles(vp_size: Vector2):
 	for p in ambient_particles:
-		var col = Color(0.9, 0.9, 0.95, p.alpha)
+		var base_col = _get_theme_particle_color(p.depth)
+		var col = Color(base_col.r, base_col.g, base_col.b, p.alpha)
 		draw_circle(p.pos, p.size, col)
 
 func _init_light_rays():

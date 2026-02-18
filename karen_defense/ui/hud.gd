@@ -721,6 +721,16 @@ func _draw_minimap():
 		var vy = offset_y + (cam.position.y - 360.0 / zoom) * mm_scale
 		draw_rect(Rect2(vx, vy, vw, vh), Color8(255, 255, 255, 40), false, 1.0)
 
+	# Companion ping flash (karen_defense only)
+	if game.get("companion_ping_timer") != null and game.companion_ping_timer > 0:
+		var ping_px = offset_x + game.companion_ping_pos.x * mm_scale
+		var ping_py = offset_y + game.companion_ping_pos.y * mm_scale
+		var alpha = clampf(game.companion_ping_timer / 0.4, 0.0, 1.0)
+		var pulse = 8.0 + 6.0 * (1.0 - game.companion_ping_timer)
+		draw_arc(Vector2(ping_px, ping_py), pulse, 0, TAU, 12, Color8(100, 220, 255, int(180 * alpha)))
+		draw_arc(Vector2(ping_px, ping_py), pulse + 4, 0, TAU, 12, Color8(100, 220, 255, int(100 * alpha)))
+		draw_circle(Vector2(ping_px, ping_py), 3, Color8(255, 255, 255, int(220 * alpha)))
+
 	# Label
 	draw_string(font, Vector2(mm_x, mm_y - 6), "MINIMAP", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color8(160, 150, 180, 200))
 
@@ -729,7 +739,8 @@ func _draw_minimap():
 		var badge_x = mm_x + mm_size - 2
 		var badge_y = mm_y - 6
 		var is_connected = game.companion_session.is_session_connected()
-		var badge_text = "Companion" if is_connected else "Companion"
+		var lat = game.companion_session.get_latency_ms() if is_connected else 0
+		var badge_text = ("Companion " + str(lat) + "ms") if (is_connected and lat > 0) else "Companion"
 		var badge_status = " ●" if is_connected else " ○"
 		var badge_col = Color8(100, 220, 120) if is_connected else Color8(140, 140, 160)
 		var dot_col = Color8(80, 255, 100) if is_connected else Color8(100, 100, 120)

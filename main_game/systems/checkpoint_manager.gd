@@ -12,6 +12,10 @@ var respawn_gold_penalty_ratio: float = 0.15
 var recent_respawn_timer: float = 0.0
 var checkpoint_visit_count: int = 0
 
+# Phase 4.1: Active checkpoint lights (capped at 4 per performance budget)
+var _checkpoint_lights: Array = []
+const MAX_CHECKPOINT_LIGHTS: int = 4
+
 func setup(game_ref):
 	game = game_ref
 	respawn_enabled = true
@@ -72,8 +76,14 @@ func _trigger_checkpoint(index: int):
 	if game.post_process:
 		game.post_process.trigger_bloom_boost(0.2)  # Subtle glow on checkpoint reach
 
+	# Phase 4.1: Spawn warm glow light at this checkpoint (cap at MAX_CHECKPOINT_LIGHTS)
+	_spawn_checkpoint_light(last_position)
+
 	if not shop_open_from_checkpoint:
 		shop_open_from_checkpoint = true
+		# Phase 5.3: Pass checkpoint tier to shop for tiered inventory
+		if game.shop_menu.has_method("set_checkpoint_tier"):
+			game.shop_menu.set_checkpoint_tier(index)
 		game.shop_menu.show_menu(true)
 	if game.sfx:
 		game.sfx.play_wave_complete()
@@ -118,3 +128,40 @@ func respawn():
 		if ally.current_hp <= 0:
 			ally.current_hp = ally.max_hp
 			ally.state = AllyEntity.AllyState.IDLE
+
+func _spawn_checkpoint_light(pos: Vector2):
+	"""Phase 4.1: Add warm PointLight2D at checkpoint. Cap at MAX_CHECKPOINT_LIGHTS."""
+	if _checkpoint_lights.size() >= MAX_CHECKPOINT_LIGHTS:
+		# Remove oldest light to stay within budget
+		var old_light = _checkpoint_lights.pop_front()
+		if is_instance_valid(old_light):
+			old_light.queue_free()
+
+	var light = PointLight2D.new()
+	light.name = "CheckpointLight"
+	light.position = pos + Vector2(0, -30)  # Slightly above checkpoint center
+	light.color = Color(1.0, 0.9, 0.7)      # Warm golden glow
+	light.energy = 0.9
+	light.texture_scale = 1.8
+	light.range_layer_min = -1024
+	light.range_layer_max = 1024
+
+	# Create a simple circular texture for the light if none loaded
+	var tex = _make_point_light_texture()
+	if tex:
+		light.texture = tex
+
+	game.entity_layer.add_child(light)
+	_checkpoint_lights.append(light)
+
+func _make_point_light_texture() -> ImageTexture:
+	"""Generate a radial gradient texture for PointLight2D."""
+	var size = 128
+	var img = Image.create(size, size, false, Image.FORMAT_RGBA8)
+	var center = Vector2(size / 2.0, size / 2.0)
+	for y in range(size):
+		for x in range(size):
+			var dist = Vector2(x, y).distance_to(center) / (size / 2.0)
+			var alpha = clamp(1.0 - dist * dist, 0.0, 1.0)
+			img.set_pixel(x, y, Color(1.0, 1.0, 1.0, alpha))
+	return ImageTexture.create_from_image(img)

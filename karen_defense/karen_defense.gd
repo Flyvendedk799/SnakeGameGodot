@@ -89,6 +89,7 @@ var damage_numbers: Array = []
 var wave_announce_text: String = ""
 var wave_announce_timer: float = 0.0
 var wave_announce_sub: String = ""
+var wave_announce_companion: String = ""
 
 # Title screen animation
 var title_time: float = 0.0
@@ -119,6 +120,18 @@ const COMPANION_MINIMAP_INTERVAL: float = 0.05  # 20Hz for real-time minimap/cho
 # Companion action HUD notification (array of {text, timer})
 var companion_action_feed: Array = []
 const MAX_COMPANION_ACTIONS: int = 3
+
+# Companion ping "look here" - HUD draws flash at this position
+var companion_ping_pos: Vector2 = Vector2.ZERO
+var companion_ping_timer: float = 0.0
+
+# Companion per-wave stats for wave_summary
+var companion_wave_kills: int = 0
+var companion_wave_supplies: int = 0
+var companion_wave_mark_strike: int = 0
+var companion_wave_supply_chain: int = 0
+var companion_wave_emp_followup: int = 0
+var companion_wave_mega_strikes: int = 0
 
 # Debug snapshot (Karen Defense perf overview)
 var _debug_karen_timer: float = 0.0
@@ -368,6 +381,9 @@ func _process(delta):
 	_update_combo_meter(delta)
 	_update_radar_marks(delta)
 	_update_fort_buff(delta)
+	# Update companion ping flash timer
+	if companion_ping_timer > 0:
+		companion_ping_timer -= delta
 	# Update companion action feed timers
 	var i = companion_action_feed.size() - 1
 	while i >= 0:
@@ -630,6 +646,15 @@ func _wave_complete():
 	wave_announce_text = "WAVE %d COMPLETE!" % current_wave
 	wave_announce_sub = "Shop opening in %.0fs..." % wave_complete_timer
 	wave_announce_timer = 2.5
+	if companion_session and companion_session.is_session_connected():
+		companion_session.send_wave_summary(companion_wave_kills, companion_wave_supplies, companion_wave_mark_strike, companion_wave_supply_chain, companion_wave_emp_followup, companion_wave_mega_strikes)
+		var parts: Array[String] = []
+		if companion_wave_kills > 0: parts.append("%d kills" % companion_wave_kills)
+		if companion_wave_supplies > 0: parts.append("%d supplies" % companion_wave_supplies)
+		if companion_wave_mega_strikes > 0: parts.append("%d MEGA" % companion_wave_mega_strikes)
+		if companion_wave_mark_strike > 0 or companion_wave_supply_chain > 0 or companion_wave_emp_followup > 0:
+			parts.append("combos")
+		wave_announce_companion = "Companion: " + ", ".join(parts) if not parts.is_empty() else ""
 
 func _revive_dead_players():
 	if player_node.is_dead:
@@ -679,6 +704,7 @@ func start_wave():
 	wave_announce_text = "WAVE %d" % current_wave
 	var subs = ["Let's gooo!", "Stay chill...", "Here they come!", "Incoming Karens!", "Brace yourself, dude!"]
 	wave_announce_sub = subs[current_wave % subs.size()]
+	wave_announce_companion = ""
 	wave_announce_timer = 2.5
 	camera_zoom_punch = 0.06
 	if sfx:
@@ -690,6 +716,13 @@ func start_wave():
 		companion_session.notify_new_wave()
 		# Spawn persistent joystick-controlled helicopter for companion
 		_ensure_companion_helicopter()
+	# Reset per-wave companion stats for this wave
+	companion_wave_kills = 0
+	companion_wave_supplies = 0
+	companion_wave_mark_strike = 0
+	companion_wave_supply_chain = 0
+	companion_wave_emp_followup = 0
+	companion_wave_mega_strikes = 0
 
 
 func _ensure_companion_helicopter():
@@ -757,9 +790,13 @@ func _on_companion_bomb_landed(pos: Vector2, kills: int):
 						bonus_kills += 1
 			break
 	var total_kills = kills + bonus_kills
+	companion_wave_kills += total_kills
+	if total_kills >= 5:
+		companion_wave_mega_strikes += 1
 	var text = "Companion bomb: %d kills!" % total_kills if total_kills > 0 else "Companion bomb landed!"
 	if mark_triggered:
 		combo_stats["mark_strike"] += 1
+		companion_wave_mark_strike += 1
 		_add_combo(12.0 + float(total_kills), "Mark & Strike")
 		text += "  [Mark & Strike]"
 	_add_companion_action(text)
@@ -780,10 +817,12 @@ func _on_companion_supply_landed(pos: Vector2):
 			if d.reinforced and d.reinforcement_hp < d.max_reinforcement_hp and d.position.distance_to(pos) <= 150.0:
 				near_damaged = true
 				break
+	companion_wave_supplies += 1
 	if near_damaged:
 		fort_buff_timer = 12.0
 		fort_buff_tick = 0.0
 		combo_stats["supply_chain"] += 1
+		companion_wave_supply_chain += 1
 		_add_combo(10.0, "Supply Chain")
 		_add_companion_action("Supply Chain: Fortified structures boosted!")
 	else:
@@ -966,6 +1005,7 @@ func enable_companion_session() -> void:
 	companion_session.supply_drop_requested_at_normalized.connect(_on_companion_supply_drop)
 	companion_session.emp_drop_requested_at_normalized.connect(_on_companion_emp_drop)
 	companion_session.radar_ping_requested.connect(_on_companion_radar_ping)
+	companion_session.ping_requested_at_normalized.connect(_on_companion_ping)
 	companion_session.chopper_input_received.connect(_on_companion_chopper_input)
 	world_select._on_companion_session_ready()
 
@@ -1254,6 +1294,8 @@ func _draw_game_overlay():
 		var title_col = Color(0.3, 1.0, 0.4, alpha) if wave_complete_pending else Color(1, 0.85, 0.2, alpha)
 		draw_string(font, Vector2(0, 368), wave_announce_text, HORIZONTAL_ALIGNMENT_CENTER, SCREEN_W, 40, title_col)
 		draw_string(font, Vector2(0, 398), wave_announce_sub, HORIZONTAL_ALIGNMENT_CENTER, SCREEN_W, 16, Color(0.8, 0.75, 0.5, alpha * 0.8))
+		if wave_announce_companion.length() > 0:
+			draw_string(font, Vector2(0, 424), wave_announce_companion, HORIZONTAL_ALIGNMENT_CENTER, SCREEN_W, 14, Color(0.5, 0.9, 0.7, alpha * 0.9))
 
 	# Grace period countdown
 	if wave_grace_timer > 0 and state == GameState.WAVE_ACTIVE and not wave_complete_pending:
@@ -1330,6 +1372,7 @@ func _apply_emp_followup_bonus(emp_hp_snapshot: Dictionary):
 		enemy.take_damage(bonus, self)
 		emp_followup_hits += 1
 		combo_stats["emp_followup"] += 1
+		companion_wave_emp_followup += 1
 		_add_combo(4.0, "EMP Follow-up x%.0f" % (1.35))
 		spawn_damage_number(enemy.position + Vector2(0, -12), "+%d EMP" % bonus, Color8(120, 220, 255))
 
@@ -1394,3 +1437,12 @@ func _on_companion_radar_ping():
 	_add_companion_action("Companion: Radar active! %d marks" % radar_marks.size())
 	if sfx:
 		sfx.play_repair()  # Use existing sound for now
+
+func _on_companion_ping(nx: float, ny: float):
+	"""Companion tapped minimap to ping 'look here' — flash HUD minimap."""
+	var m = map
+	var w = maxf(m.SCREEN_W, 1.0)
+	var h = maxf(m.SCREEN_H, 1.0)
+	companion_ping_pos = Vector2(nx * w, ny * h)
+	companion_ping_timer = 1.2
+	_add_companion_action("Companion: Look here!")

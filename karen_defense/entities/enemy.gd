@@ -64,6 +64,21 @@ var knockback_offset: Vector2 = Vector2.ZERO
 var trail_history: Array = []
 var trail_timer: float = 0.0
 
+# Phase 6.1: Behavior tree (platformer AI, opt-in per enemy_type)
+var _bt_tree: BehaviorTree = null
+var _bt_blackboard: Dictionary = {}
+var _bt_enabled: bool = false
+
+# Phase 3.3: Hit react, smooth knockback velocity, stagger system
+var knockback_velocity: Vector2 = Vector2.ZERO  # Smooth physics-based knockback
+var flinch_timer: float = 0.0                   # 1-2 frame rotation flinch
+var flinch_rotation: float = 0.0
+var stagger_timer: float = 0.0                  # Stun duration (heavy/crit hits)
+const KNOCKBACK_DECAY: float = 6.5              # How fast knockback decays (1/s)
+const FLINCH_DURATION: float = 0.05
+const STAGGER_LIGHT: float = 0.0               # Light hits: no stun
+const STAGGER_HEAVY: float = 0.10              # Heavy/combo-3/crit: 0.1s stun
+
 # AAA Animation upgrade - spawn animation
 var spawn_timer: float = 0.0
 var spawn_complete: bool = false
@@ -95,6 +110,8 @@ func initialize(type: String, stats: Dictionary):
 	label_short = stats.get("short", "K")
 	sprite_texture = _get_texture(stats.get("sprite", "enemya"))
 	anim_time = randf() * 10.0
+	# Phase 6.1: Build behavior tree for platformer AI modes
+	_init_behavior_tree()
 	# AAA Visual Overhaul: Setup shader visual for Main Game
 	_setup_shader_visual()
 	if Engine.get_main_loop() and Engine.get_main_loop().current_scene and Engine.get_main_loop().current_scene.has_method("get_enemy_hp_multiplier"):
@@ -115,6 +132,22 @@ func update_enemy(delta: float, game):
 	_update_squash(delta)
 	_update_trail(delta)
 	knockback_offset = knockback_offset.lerp(Vector2.ZERO, delta * 12.0)
+	# Phase 3.3: Smooth knockback velocity decay over 0.15s
+	if knockback_velocity.length() > 0.5:
+		position += knockback_velocity * delta
+		knockback_velocity = knockback_velocity.lerp(Vector2.ZERO, delta * KNOCKBACK_DECAY)
+	else:
+		knockback_velocity = Vector2.ZERO
+	# Phase 3.3: Flinch rotation
+	if flinch_timer > 0:
+		flinch_timer = maxf(0.0, flinch_timer - delta)
+		flinch_rotation = (1.0 - flinch_timer / FLINCH_DURATION) * 0.1
+	else:
+		flinch_rotation = lerpf(flinch_rotation, 0.0, delta * 15.0)
+	# Phase 3.3: Stagger timer (enemy frozen during stun)
+	if stagger_timer > 0:
+		stagger_timer = maxf(0.0, stagger_timer - delta)
+		return  # Skip state machine while staggered
 
 	# AAA Upgrade: Spawn animation
 	if not spawn_complete:
@@ -143,14 +176,14 @@ func update_enemy(delta: float, game):
 				queue_free()
 				return
 
-	# Fall-to-death: check if enemy fell below level bottom
-	var level_bottom = 720.0
+	# Fall-to-death: only applies in maps that define level_height (sideview/platformer).
+	# Top-down maps (FortMap) have no level_height, so this check is skipped there.
 	if game.map and game.map.get("level_height"):
-		level_bottom = game.map.level_height
-	if position.y + entity_size >= level_bottom:
-		# Instant death from falling into void
-		take_damage(current_hp + 999, game)
-		return
+		var level_bottom = float(game.map.level_height)
+		if position.y + entity_size >= level_bottom:
+			# Instant death from falling into void
+			take_damage(current_hp + 999, game)
+			return
 
 	queue_redraw()
 
@@ -233,6 +266,10 @@ func _state_attacking_door(_delta, game):
 			game.particles.emit_burst(position.x, position.y, Color8(120, 120, 140), 4)
 
 func _state_chasing(delta, game):
+	# Phase 6.1: Delegate to behavior tree in platformer mode
+	if _bt_enabled and game.get("is_sideview_game") and game.is_sideview_game:
+		_tick_behavior_tree(delta, game)
+		return
 	# Build candidate list from all alive players + allies — chase across entire map
 	# Prioritize players over allies (enemies are drawn to the main threat)
 	var best_target = null
@@ -465,13 +502,44 @@ func _is_pit_ahead(direction: Vector2, game) -> bool:
 
 	return false
 
-func take_damage(amount: int, game):
+func take_damage(amount: int, game, hit_tier: String = "medium"):
+	"""Phase 3.3: Enhanced take_damage with stagger tiers.
+	hit_tier: 'light' | 'medium' | 'heavy' | 'crit'
+	"""
 	current_hp -= amount
 	hit_flash_timer = 0.1
-	squash_factor = 0.6
-	# Visual knockback from damage source
+	# Phase 3.3: Flinch rotation
+	flinch_timer = FLINCH_DURATION
+
+	# Phase 3.3: Scale squash pulse by damage magnitude
+	var impact_strength = clamp(float(amount) / 30.0, 0.5, 2.0)
+	squash_factor = clamp(0.6 - (impact_strength - 0.5) * 0.12, 0.4, 0.7)
+
+	# Phase 3.3: Stagger tiers + smooth knockback velocity
+	var knockback_power = 0.0
+	match hit_tier:
+		"light":
+			knockback_power = 60.0
+			stagger_timer = 0.0
+		"medium":
+			knockback_power = 100.0
+			stagger_timer = 0.0
+		"heavy", "crit":
+			knockback_power = 200.0
+			stagger_timer = STAGGER_HEAVY  # 0.1s stun
+
+	# Physics knockback from damage source
 	if last_damager and is_instance_valid(last_damager):
-		knockback_offset = (position - last_damager.position).normalized() * 8.0
+		var knockback_dir = (position - last_damager.position).normalized()
+		knockback_velocity = knockback_dir * knockback_power
+		knockback_offset = knockback_dir * 8.0  # Legacy visual offset
+
+	# CharacterVisual: trigger flash + squash
+	if _use_shader_visual and character_visual:
+		character_visual.trigger_flash(0.1, Color(1.0, 0.5, 0.5))
+		if hit_tier in ["heavy", "crit"]:
+			character_visual.apply_squash({"squash": 0.7, "axis": "x"})
+
 	if current_hp <= 0:
 		die(game)
 
@@ -510,10 +578,16 @@ func die(game, drop_loot: bool = true):
 			game.player_node.heal(game.player_node.lifesteal)
 		if game.p2_joined and game.player2_node and not game.player2_node.is_dead and game.player2_node.lifesteal > 0:
 			game.player2_node.heal(game.player2_node.lifesteal)
-	game.particles.emit_death_burst(position.x, position.y, color)
-	if game.sfx: game.sfx.play_enemy_death()
-	# Chromatic aberration on death
-	if is_boss:
+	# Phase 6: Route enemy death through FX bus
+	if game.get("fx_manager") and game.fx_manager:
+		game.fx_manager.emit_enemy_death({"position": position, "color": color})
+	else:
+		game.particles.emit_death_burst(position.x, position.y, color)
+		if game.sfx: game.sfx.play_enemy_death()
+		if is_boss:
+			game.start_chromatic(6.0)
+	# Boss-specific chromatic always fires regardless of bus
+	if is_boss and game.has_method("start_chromatic"):
 		game.start_chromatic(6.0)
 	state = EnemyState.DYING
 	dying_timer = 0.3
@@ -543,6 +617,41 @@ func _update_trail(delta: float):
 		if trail_history[i].alpha <= 0.0:
 			trail_history.remove_at(i)
 		i -= 1
+
+func _init_behavior_tree():
+	"""Phase 6.1: Build behavior tree for platformer-mode AI."""
+	if not ClassDB.class_exists("BehaviorTree"):
+		return  # BT system not loaded
+	match enemy_type:
+		"rusher", "complainer", "manager":
+			_bt_tree = BehaviorTree.make_melee_rusher_tree(self)
+		"sniper", "karen_ranged":
+			_bt_tree = BehaviorTree.make_ranged_kiter_tree(self)
+		"bouncer", "karen_heavy", "boss":
+			_bt_tree = BehaviorTree.make_heavy_tree(self)
+		_:
+			return  # No BT for unknown types (tower defense only)
+	_bt_enabled = true
+
+func _tick_behavior_tree(delta: float, game):
+	"""Phase 6.1: Tick the BT and execute its movement/attack decision."""
+	if not _bt_enabled or _bt_tree == null:
+		return
+	_bt_blackboard = BehaviorTree.update_blackboard(self, game)
+	var status = _bt_tree.tick(delta)
+	# BT actions write to blackboard keys: "move_dir", "do_attack", "do_retreat"
+	var move_dir = _bt_blackboard.get("move_dir", Vector2.ZERO)
+	if move_dir != Vector2.ZERO:
+		position += move_dir * move_speed * delta
+		if game.get("map"):
+			position = game.map.resolve_collision(position, entity_size)
+		last_dir = move_dir.normalized()
+	if _bt_blackboard.get("do_attack", false) and attack_timer <= 0:
+		if is_ranged:
+			_fire_ranged(game)
+		else:
+			_do_melee(game)
+		attack_timer = attack_cooldown
 
 func _setup_shader_visual():
 	"""AAA Visual Overhaul: Create CharacterVisual for shader rendering in Main Game."""
@@ -578,6 +687,25 @@ func _draw():
 
 	# AAA Visual Overhaul: Update shader visual if active
 	if _use_shader_visual and character_visual:
+		# 2.5D: Draw ground shadow BEFORE delegating — shadow must render behind CharacterVisual
+		if game and game.get("is_sideview_game") and game.is_sideview_game:
+			var spulse = 1.0
+			if state == EnemyState.APPROACHING or state == EnemyState.CHASING:
+				spulse = 1.0 + abs(sin(anim_time * 8.0)) * 0.15
+			var y_fac = (position.y - 280.0) / 300.0
+			var soff_x = clampf(y_fac * 5.0, -8.0, 8.0)
+			_draw_shadow_soft(entity_size, position.y, spulse, soff_x, entity_size * 0.7 + 8.0)
+
+			# 2.5D: Depth atmosphere — far entities (high on screen) get cool desaturated tint
+			var depth = DepthPlanes.get_depth_factor(position.y)
+			var fog = (1.0 - depth) * 0.35   # 0 at front, 0.35 at back
+			character_visual.modulate = Color(
+				1.0 - fog * 0.18,
+				1.0 - fog * 0.08,
+				1.0 + fog * 0.12,
+				character_visual.modulate.a
+			)
+
 		_update_shader_visual()
 		# EARLY RETURN - CharacterVisual handles all rendering
 		return
